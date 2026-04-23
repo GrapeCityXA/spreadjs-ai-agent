@@ -17,13 +17,13 @@ export function ServiceUnavailableBanner({ missing }: ServiceUnavailableBannerPr
 				style={{ width: 16, height: 16, color: "white", fill: "#F59E0B" }}
 			/>
 			<div className="flex flex-col gap-1.5 min-w-0 flex-1">
-				<p className="text-xs leading-relaxed text-amber-800 dark:text-amber-200">
+				<p className="text-xs leading-relaxed text-amber-800 dark:text-amber-950">
 					AI 服务不可用：缺少环境变量 {missing.join(", ")}。
 					请配置后重启服务。
 				</p>
 				<button
 					type="button"
-					className="inline-flex w-fit items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-300 cursor-pointer transition-all duration-150 hover:bg-amber-500/15 hover:text-amber-900 dark:hover:text-amber-100 hover:shadow-sm active:scale-[0.97]"
+					className="inline-flex w-fit items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-amber-800 dark:text-amber-900 cursor-pointer transition-all duration-150 hover:bg-amber-500/15 hover:text-amber-950 dark:hover:text-amber-950 hover:shadow-sm active:scale-[0.97]"
 					onClick={() => window.location.reload()}
 				>
 					<RefreshCwIcon className="size-3" />
