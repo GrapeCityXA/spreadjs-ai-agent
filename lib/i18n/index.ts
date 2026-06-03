@@ -39,8 +39,12 @@ const LOCALE_CONFIGS = {
 
 export function normalizeLocale(input?: string | null): AppLocale {
 	if (!input) return DEFAULT_LOCALE;
-	const lower = input.toLowerCase();
-	if (lower === "zh" || lower === "zh-cn" || lower === "zh_hans") {
+	const locale = input.split(",")[0]?.trim().toLowerCase().replace("_", "-");
+	if (!locale) return DEFAULT_LOCALE;
+	if (locale === "en" || locale.startsWith("en-")) {
+		return "en";
+	}
+	if (locale === "zh" || locale.startsWith("zh-")) {
 		return "zh-CN";
 	}
 	return DEFAULT_LOCALE;
