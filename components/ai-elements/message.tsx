@@ -38,6 +38,7 @@ import {
 } from "react";
 import type { AppUIMessage } from "@/lib/agent/ui-message";
 import { Streamdown } from "streamdown";
+import { useTranslation } from "@/lib/i18n/react";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: AppUIMessage["role"];
@@ -267,11 +268,12 @@ export const MessageBranchPrevious = ({
   children,
   ...props
 }: MessageBranchPreviousProps) => {
+  const { t } = useTranslation();
   const { goToPrevious, totalBranches } = useMessageBranch();
 
   return (
     <Button
-      aria-label="Previous branch"
+      aria-label={t("message.previousBranch")}
       disabled={totalBranches <= 1}
       onClick={goToPrevious}
       size="icon-sm"
@@ -290,11 +292,12 @@ export const MessageBranchNext = ({
   children,
   ...props
 }: MessageBranchNextProps) => {
+  const { t } = useTranslation();
   const { goToNext, totalBranches } = useMessageBranch();
 
   return (
     <Button
-      aria-label="Next branch"
+      aria-label={t("message.nextBranch")}
       disabled={totalBranches <= 1}
       onClick={goToNext}
       size="icon-sm"
@@ -361,6 +364,7 @@ const InlineCodeBlockCopy = ({
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
 }) => {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef(0);
 
@@ -385,7 +389,7 @@ const InlineCodeBlockCopy = ({
         <button
           className="cursor-pointer p-1 text-muted-foreground transition-all hover:text-foreground"
           onClick={handleCopy}
-          title="复制代码"
+          title={t("message.copyCode")}
           type="button"
         >
           <Icon size={14} />

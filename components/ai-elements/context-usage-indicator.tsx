@@ -4,8 +4,7 @@ import { memo, type ComponentProps } from "react";
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
 import type { ContextUsage } from "@/lib/hooks/useContextUsage";
 import { formatTokenCount } from "@/lib/token-estimate";
-
-// ─── 圆环 SVG ────────────────────────────────────────────────
+import { useTranslation } from "@/lib/i18n/react";
 
 const RING_SIZE = 20;
 const STROKE_WIDTH = 2.5;
@@ -50,8 +49,6 @@ function ProgressRing({ percent }: { percent: number }) {
 	);
 }
 
-// ─── 明细行 ──────────────────────────────────────────────────
-
 function Row({ label, value }: { label: string; value: string }) {
 	return (
 		<div className="flex items-center justify-between text-xs">
@@ -63,11 +60,9 @@ function Row({ label, value }: { label: string; value: string }) {
 
 function percentOf(part: number, total: number): string {
 	if (total === 0) return "0%";
-	const p = (part / total) * 100;
-	return p < 0.1 ? "<0.1%" : `${p.toFixed(1)}%`;
+	const percent = (part / total) * 100;
+	return percent < 0.1 ? "<0.1%" : `${percent.toFixed(1)}%`;
 }
-
-// ─── 主组件 ──────────────────────────────────────────────────
 
 interface ContextUsageIndicatorProps {
 	usage: ContextUsage;
@@ -80,6 +75,7 @@ export const ContextUsageIndicator = memo(function ContextUsageIndicator({
 	visible = false,
 	side = "top",
 }: ContextUsageIndicatorProps) {
+	const { t } = useTranslation();
 	if (!visible) return null;
 
 	const { total, used, percent, isReal, breakdown } = usage;
@@ -90,37 +86,39 @@ export const ContextUsageIndicator = memo(function ContextUsageIndicator({
 				<button
 					type="button"
 					className="inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
-					aria-label={`上下文已使用 ${percent}%`}
-				suppressHydrationWarning
+					aria-label={t("contextUsage.ariaLabel", { percent })}
+					suppressHydrationWarning
 				>
 					<ProgressRing percent={percent} />
 				</button>
 			</HoverCardTrigger>
-			<HoverCardContent side={side} align="end" className="w-56 p-3 space-y-2.5 text-xs">
-				{/* 标题 */}
+			<HoverCardContent side={side} align="end" className="w-56 space-y-2.5 p-3 text-xs">
 				<div>
-					<div className="font-medium text-sm">上下文窗口</div>
-					<div className="text-popover-foreground/70 mt-0.5">
-						{formatTokenCount(used)} / {formatTokenCount(total)} tokens • {percent}%
-						{isReal
-							? <span className="ml-1 text-emerald-500" title="已获取服务端 usage">●</span>
-							: <span className="ml-1 text-popover-foreground/30" title="仅客户端估算">○</span>
-						}
+					<div className="text-sm font-medium">{t("contextUsage.title")}</div>
+					<div className="mt-0.5 text-popover-foreground/70">
+						{formatTokenCount(used)} / {formatTokenCount(total)} tokens - {percent}%
+						{isReal ? (
+							<span className="ml-1 text-emerald-500" title={t("contextUsage.serverReported")}>●</span>
+						) : (
+							<span className="ml-1 text-popover-foreground/30" title={t("contextUsage.clientEstimate")}>○</span>
+						)}
 					</div>
 				</div>
 
-				{/* 系统 */}
 				<div className="space-y-1">
-					<div className="font-medium text-popover-foreground/50 uppercase tracking-wider text-[10px]">系统</div>
-					<Row label="系统指令" value={percentOf(breakdown.systemInstructions, total)} />
-					<Row label="工具定义" value={percentOf(breakdown.toolDefinitions, total)} />
+					<div className="text-[10px] font-medium uppercase tracking-wider text-popover-foreground/50">
+						{t("contextUsage.system")}
+					</div>
+					<Row label={t("contextUsage.systemPrompt")} value={percentOf(breakdown.systemInstructions, total)} />
+					<Row label={t("contextUsage.toolDefinitions")} value={percentOf(breakdown.toolDefinitions, total)} />
 				</div>
 
-				{/* 用户上下文 */}
 				<div className="space-y-1">
-					<div className="font-medium text-popover-foreground/50 uppercase tracking-wider text-[10px]">用户上下文</div>
-					<Row label="对话消息" value={percentOf(breakdown.messages, total)} />
-					<Row label="工具结果" value={percentOf(breakdown.toolResults, total)} />
+					<div className="text-[10px] font-medium uppercase tracking-wider text-popover-foreground/50">
+						{t("contextUsage.conversation")}
+					</div>
+					<Row label={t("contextUsage.messages")} value={percentOf(breakdown.messages, total)} />
+					<Row label={t("contextUsage.toolResults")} value={percentOf(breakdown.toolResults, total)} />
 				</div>
 			</HoverCardContent>
 		</HoverCard>

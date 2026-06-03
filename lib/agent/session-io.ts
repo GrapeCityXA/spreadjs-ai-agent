@@ -1,20 +1,20 @@
-import { getAppToolName, isAppToolPart, type AppUIMessage } from "@/lib/agent/ui-message";
+import { generateSessionId } from "@/lib/agent/session-store";
+import {
+	getAppToolName,
+	getPartText,
+	isAppToolPart,
+	type AppUIMessage,
+} from "@/lib/agent/ui-message";
+import { createTranslator, type AppLocale } from "@/lib/i18n";
 import type { Session } from "@/lib/agent/session-store";
 import type { ErrorLogEntry } from "@/lib/logging/types";
-import { generateSessionId } from "@/lib/agent/session-store";
 
-// ============================================================================
-// 类型定义
-// ============================================================================
-
-/** 会话导出文件格式 */
 export interface SessionExportFile {
 	version: 1;
 	exportedAt: string;
 	session: Omit<Session, "snapshotMap">;
 }
 
-/** 工具调用摘要记录（从 messages 提取） */
 export interface ToolCallRecord {
 	messageId: string;
 	toolName: string;
@@ -23,31 +23,81 @@ export interface ToolCallRecord {
 	state: string;
 }
 
-/** 诊断包格式 */
 export interface DiagnosticExportFile {
 	version: 1;
 	exportedAt: string;
 	environment: {
 		userAgent: string;
 		url: string;
-		// timestamp 已移除：与 exportedAt 重复
 	};
 	session: Omit<Session, "snapshotMap">;
 	toolCallSummary: ToolCallRecord[];
+	clientDiagnostics: ClientDiagnostics;
 	serverLogs: ErrorLogEntry[];
 }
 
-// ============================================================================
-// 会话导出
-// ============================================================================
+export interface AssistantMessageDiagnostics {
+	messageId: string;
+	partCount: number;
+	partSummary: Array<{
+		type: string;
+		state?: string;
+		toolName?: string;
+		textLength?: number;
+		textPreview?: string;
+		hasOutput?: boolean;
+	}>;
+	textPartCount: number;
+	nonEmptyTextPartCount: number;
+	reasoningPartCount: number;
+	toolPartCount: number;
+	errorToolCount: number;
+	lastToolState: string | null;
+	lastToolName: string | null;
+	lastNonEmptyText: string | null;
+	hasPendingTool: boolean;
+	hasOnlyEmptyTextAfterLastErrorTool: boolean;
+	hasRetryPromiseAfterLastErrorTool: boolean;
+}
 
-/**
- * 将 Session 序列化为导出 JSON 字符串。
- * snapshotMap 不导出（快照是 IndexedDB 大对象，跨设备无意义）。
- */
+export interface ClientDiagnostics {
+	lastAssistant: AssistantMessageDiagnostics | null;
+	allAssistantMessages: AssistantMessageDiagnostics[];
+	lastAutoSendDecision?: AutoSendDecisionSnapshot;
+	autoSendDecisionHistory?: AutoSendDecisionSnapshot[];
+	chatRequestHistory?: ChatRequestSnapshot[];
+	autoContinueRisk: {
+		hasErrorToolWithoutLaterSuccess: boolean;
+		hasRetryPromiseWithoutLaterTool: boolean;
+		lastAssistantLooksIncomplete: boolean;
+		reason: string | null;
+	};
+}
+
+export interface AutoSendDecisionSnapshot {
+	timestamp: string;
+	decision: boolean;
+	reason: string;
+	status?: string;
+	lastMessageId?: string;
+	lastMessageRole?: string;
+	lastAssistantPartCount?: number;
+}
+
+export interface ChatRequestSnapshot {
+	requestId: string;
+	sessionId: string;
+	startedAt: string;
+	endedAt?: string;
+	status: "started" | "completed" | "errored";
+	messageCount: number;
+	lastMessageId?: string;
+	lastMessageRole?: string;
+	errorMessage?: string;
+}
+
 export function exportSessionToJson(session: Session): string {
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	const { snapshotMap: _snap, ...sessionData } = session;
+	const sessionData = omitSnapshotMap(session);
 	const file: SessionExportFile = {
 		version: 1,
 		exportedAt: new Date().toISOString(),
@@ -56,78 +106,58 @@ export function exportSessionToJson(session: Session): string {
 	return JSON.stringify(file, null, 2);
 }
 
-/**
- * 触发浏览器下载会话 JSON 文件。
- * 文件名：<会话标题>-<YYYY-MM-DD>.json（特殊字符替换为 -）
- */
 export function downloadSessionFile(session: Session): void {
 	const json = exportSessionToJson(session);
 	const date = new Date().toISOString().slice(0, 10);
-	const safeTitle = session.title.replace(/[\\/:*?"<>|]/g, "-").slice(0, 60);
+	const safeTitle = (session.title || "session").replace(/[\\/:*?"<>|]/g, "-").slice(0, 60);
 	const filename = `${safeTitle}-${date}.json`;
 	triggerDownload(json, filename, "application/json");
 }
 
-// ============================================================================
-// 会话导入
-// ============================================================================
-
-/**
- * 解析并校验导入文件的 JSON 字符串。
- * 失败时抛出包含可读 message 的 Error。
- * 诊断包（含 toolCallSummary / serverLogs 字段）会被拒绝并给出明确提示。
- */
-export function parseSessionImportFile(json: string): SessionExportFile {
+export function parseSessionImportFile(
+	json: string,
+	locale: AppLocale = "en",
+): SessionExportFile {
+	const t = createTranslator(locale);
 	let parsed: unknown;
+
 	try {
 		parsed = JSON.parse(json);
 	} catch {
-		throw new Error("文件不是合法的 JSON 格式");
+		throw new Error(t("sessionImport.invalidJson"));
 	}
 
 	if (!parsed || typeof parsed !== "object") {
-		throw new Error("文件内容损坏：根节点不是对象");
+		throw new Error(t("sessionImport.invalidRoot"));
 	}
 
 	const obj = parsed as Record<string, unknown>;
 
 	if (obj.version !== 1) {
-		throw new Error(
-			`文件格式版本不兼容（期望 version: 1，实际 version: ${obj.version}）`,
-		);
+		throw new Error(t("sessionImport.versionMismatch", { version: String(obj.version) }));
 	}
 
-	// 诊断包含有 toolCallSummary / serverLogs 字段，与会话文件结构不同，拒绝导入
 	if ("toolCallSummary" in obj || "serverLogs" in obj) {
-		throw new Error(
-			"此文件是诊断包，无法作为会话导入。请选择通过「导出会话」生成的文件（不含 toolCallSummary 字段）。",
-		);
+		throw new Error(t("sessionImport.diagnostic"));
 	}
 
 	if (!obj.session || typeof obj.session !== "object") {
-		throw new Error("文件内容损坏：缺少 session 字段");
+		throw new Error(t("sessionImport.missingSession"));
 	}
 
 	const session = obj.session as Record<string, unknown>;
 
 	if (!Array.isArray(session.messages)) {
-		throw new Error("文件内容损坏：缺少消息记录（messages）");
+		throw new Error(t("sessionImport.missingMessages"));
 	}
 
 	if (typeof session.id !== "string" || !session.id) {
-		throw new Error("文件内容损坏：缺少会话 ID");
+		throw new Error(t("sessionImport.missingId"));
 	}
 
 	return parsed as SessionExportFile;
 }
 
-/**
- * 将导入文件转换为可存储的 Session。
- * - 生成全新 sessionId，避免与本地会话冲突
- * - snapshotMap 置空
- * - updatedAt 更新为当前时间
- * - createdAt 保留原值
- */
 export function importFileToSession(file: SessionExportFile): Session {
 	return {
 		...file.session,
@@ -137,21 +167,15 @@ export function importFileToSession(file: SessionExportFile): Session {
 	};
 }
 
-// ============================================================================
-// 诊断包
-// ============================================================================
-
-/**
- * 从 AppUIMessage[] 中提取工具调用摘要。
- * 遍历所有 assistant 消息的 parts，提取工具调用记录。
- */
 export function extractToolCallSummary(messages: AppUIMessage[]): ToolCallRecord[] {
 	const records: ToolCallRecord[] = [];
+	const safeMessages = Array.isArray(messages) ? messages : [];
 
-	for (const message of messages) {
+	for (const message of safeMessages) {
 		if (message.role !== "assistant") continue;
+		const parts = Array.isArray(message.parts) ? message.parts : [];
 
-		for (const part of message.parts) {
+		for (const part of parts) {
 			if (!isAppToolPart(part)) continue;
 
 			records.push({
@@ -167,16 +191,162 @@ export function extractToolCallSummary(messages: AppUIMessage[]): ToolCallRecord
 	return records;
 }
 
-/**
- * 组装诊断包 JSON 字符串。
- * serverLogs 拉取失败时传空数组，不阻断导出。
- */
+function previewText(text: string): string {
+	return text.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+function analyzeAssistantMessage(message: AppUIMessage): AssistantMessageDiagnostics {
+	const parts = Array.isArray(message.parts) ? message.parts : [];
+	let textPartCount = 0;
+	let nonEmptyTextPartCount = 0;
+	let reasoningPartCount = 0;
+	let toolPartCount = 0;
+	let errorToolCount = 0;
+	let lastToolState: string | null = null;
+	let lastToolName: string | null = null;
+	let lastErrorToolIndex = -1;
+	let lastSuccessToolIndex = -1;
+	let lastNonEmptyText: string | null = null;
+	let hasPendingTool = false;
+
+	const partSummary = parts.map((part, index) => {
+		const state = getPartStateSafe(part);
+		const text = getPartText(part);
+		const summary: AssistantMessageDiagnostics["partSummary"][number] = {
+			type: part.type,
+		};
+		if (state) summary.state = state;
+
+		if (text != null) {
+			textPartCount++;
+			summary.textLength = text.length;
+			summary.textPreview = previewText(text);
+			if (text.trim()) {
+				nonEmptyTextPartCount++;
+				lastNonEmptyText = previewText(text);
+			}
+		}
+
+		if (part.type === "reasoning") {
+			reasoningPartCount++;
+		}
+
+		if (isAppToolPart(part)) {
+			const toolName = getAppToolName(part);
+			toolPartCount++;
+			lastToolName = toolName;
+			lastToolState = state ?? "unknown";
+			summary.toolName = toolName;
+			summary.hasOutput = "output" in part && part.output != null;
+			if (state === "output-error") {
+				errorToolCount++;
+				lastErrorToolIndex = index;
+			}
+			if (state === "output-available") {
+				lastSuccessToolIndex = index;
+			}
+			if (state === "input-streaming" || state === "input-available") {
+				hasPendingTool = true;
+			}
+		}
+
+		return summary;
+	});
+
+	const hasOnlyEmptyTextAfterLastErrorTool = lastErrorToolIndex >= 0
+		&& lastSuccessToolIndex < lastErrorToolIndex
+		&& parts.slice(lastErrorToolIndex + 1).every((part) => {
+			if (part.type === "step-start" || part.type === "reasoning") return true;
+			if (part.type === "text") return !part.text?.trim();
+			return false;
+		});
+	const hasRetryPromiseAfterLastErrorTool = lastErrorToolIndex >= 0
+		&& lastSuccessToolIndex < lastErrorToolIndex
+		&& parts.slice(lastErrorToolIndex + 1).some((part) => (
+			part.type === "text" && /重试|再试|retry|try again/i.test(part.text ?? "")
+		))
+		&& !parts.slice(lastErrorToolIndex + 1).some(isAppToolPart);
+
+	return {
+		messageId: message.id,
+		partCount: parts.length,
+		partSummary,
+		textPartCount,
+		nonEmptyTextPartCount,
+		reasoningPartCount,
+		toolPartCount,
+		errorToolCount,
+		lastToolState,
+		lastToolName,
+		lastNonEmptyText,
+		hasPendingTool,
+		hasOnlyEmptyTextAfterLastErrorTool,
+		hasRetryPromiseAfterLastErrorTool,
+	};
+}
+
+function getPartStateSafe(part: AppUIMessage["parts"][number]): string | undefined {
+	return "state" in part && typeof part.state === "string" ? part.state : undefined;
+}
+
+export function buildClientDiagnostics(
+	messages: AppUIMessage[],
+	lastAutoSendDecision?: AutoSendDecisionSnapshot,
+	autoSendDecisionHistory?: AutoSendDecisionSnapshot[],
+	chatRequestHistory?: ChatRequestSnapshot[],
+): ClientDiagnostics {
+	const safeMessages = Array.isArray(messages) ? messages : [];
+	const assistantMessages = safeMessages
+		.filter((message) => message.role === "assistant")
+		.map(analyzeAssistantMessage);
+	const lastAssistant = assistantMessages[assistantMessages.length - 1] ?? null;
+
+	let reason: string | null = null;
+	const hasErrorToolWithoutLaterSuccess = !!lastAssistant?.hasOnlyEmptyTextAfterLastErrorTool;
+	const hasRetryPromiseWithoutLaterTool = !!lastAssistant?.hasRetryPromiseAfterLastErrorTool;
+	const lastAssistantLooksIncomplete = !!lastAssistant
+		&& !lastAssistant.hasPendingTool
+		&& (
+			lastAssistant.hasOnlyEmptyTextAfterLastErrorTool
+			|| lastAssistant.hasRetryPromiseAfterLastErrorTool
+			|| (
+				lastAssistant.reasoningPartCount > 0
+				&& lastAssistant.toolPartCount === 0
+				&& lastAssistant.nonEmptyTextPartCount === 0
+			)
+		);
+
+	if (hasErrorToolWithoutLaterSuccess) {
+		reason = "Last assistant message ended after an output-error tool without a later successful tool or substantive final text.";
+	} else if (hasRetryPromiseWithoutLaterTool) {
+		reason = "Last assistant message promised a retry after an output-error tool, but no later tool call was emitted.";
+	} else if (lastAssistantLooksIncomplete) {
+		reason = "Last assistant message contains reasoning but no substantive final text or tool call.";
+	}
+
+	return {
+		lastAssistant,
+		allAssistantMessages: assistantMessages,
+		lastAutoSendDecision,
+		autoSendDecisionHistory,
+		chatRequestHistory,
+		autoContinueRisk: {
+			hasErrorToolWithoutLaterSuccess,
+			hasRetryPromiseWithoutLaterTool,
+			lastAssistantLooksIncomplete,
+			reason,
+		},
+	};
+}
+
 export function exportDiagnosticToJson(
 	session: Session,
 	serverLogs: ErrorLogEntry[],
+	lastAutoSendDecision?: AutoSendDecisionSnapshot,
+	autoSendDecisionHistory?: AutoSendDecisionSnapshot[],
+	chatRequestHistory?: ChatRequestSnapshot[],
 ): string {
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	const { snapshotMap: _snap, ...sessionData } = session;
+	const sessionData = omitSnapshotMap(session);
 	const exportedAt = new Date().toISOString();
 
 	const file: DiagnosticExportFile = {
@@ -187,41 +357,57 @@ export function exportDiagnosticToJson(
 			url: typeof window !== "undefined" ? window.location.href : "unknown",
 		},
 		session: sessionData,
-		toolCallSummary: extractToolCallSummary(session.messages),
+		toolCallSummary: extractToolCallSummary(sessionData.messages),
+		clientDiagnostics: buildClientDiagnostics(
+			sessionData.messages,
+			lastAutoSendDecision,
+			autoSendDecisionHistory,
+			chatRequestHistory,
+		),
 		serverLogs,
 	};
 
 	return JSON.stringify(file, null, 2);
 }
 
-/**
- * 触发浏览器下载诊断包 JSON 文件。
- * 文件名：spreadjs-agent-diagnostic-<ISO时间>.json
- */
+function omitSnapshotMap(session: Session): Omit<Session, "snapshotMap"> {
+	return {
+		id: session.id || generateSessionId(),
+		title: session.title || "Untitled",
+		messages: Array.isArray(session.messages) ? session.messages : [],
+		createdAt: session.createdAt || Date.now(),
+		updatedAt: session.updatedAt || session.createdAt || Date.now(),
+		tokenUsage: session.tokenUsage,
+	};
+}
+
 export function downloadDiagnosticFile(
 	session: Session,
 	serverLogs: ErrorLogEntry[],
+	lastAutoSendDecision?: AutoSendDecisionSnapshot,
+	autoSendDecisionHistory?: AutoSendDecisionSnapshot[],
+	chatRequestHistory?: ChatRequestSnapshot[],
 ): void {
-	const json = exportDiagnosticToJson(session, serverLogs);
+	const json = exportDiagnosticToJson(
+		session,
+		serverLogs,
+		lastAutoSendDecision,
+		autoSendDecisionHistory,
+		chatRequestHistory,
+	);
 	const ts = new Date().toISOString().replace(/[:.]/g, "-");
 	const filename = `spreadjs-agent-diagnostic-${ts}.json`;
 	triggerDownload(json, filename, "application/json");
 }
 
-// ============================================================================
-// 内部工具
-// ============================================================================
-
 function triggerDownload(content: string, filename: string, mimeType: string): void {
 	const blob = new Blob([content], { type: mimeType });
 	const url = URL.createObjectURL(blob);
-	const a = document.createElement("a");
-	a.href = url;
-	a.download = filename;
-	// 必须附加到 DOM，否则 Firefox 不触发下载
-	document.body.appendChild(a);
-	a.click();
-	document.body.removeChild(a);
-	// 稍后释放 URL，给浏览器时间处理下载请求
+	const anchor = document.createElement("a");
+	anchor.href = url;
+	anchor.download = filename;
+	document.body.appendChild(anchor);
+	anchor.click();
+	document.body.removeChild(anchor);
 	setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

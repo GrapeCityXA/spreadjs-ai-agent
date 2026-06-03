@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { ChevronDownIcon, CheckIcon } from "lucide-react";
+import { useTranslation } from "@/lib/i18n/react";
 import {
 	Command,
 	CommandInput,
@@ -25,6 +26,7 @@ interface ToolSelectorProps {
 }
 
 export function ToolSelector({ tools, value, onChange }: ToolSelectorProps) {
+	const { t } = useTranslation();
 	const [open, setOpen] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
 
@@ -64,7 +66,7 @@ export function ToolSelector({ tools, value, onChange }: ToolSelectorProps) {
 					}`}
 				/>
 				<span className="flex-1 truncate font-mono text-xs">
-					{selected?.name ?? "选择工具"}
+					{selected?.name ?? t("debug.selectTool")}
 				</span>
 				<ChevronDownIcon
 					className={`size-3.5 flex-shrink-0 text-muted-foreground transition-transform ${
@@ -77,9 +79,9 @@ export function ToolSelector({ tools, value, onChange }: ToolSelectorProps) {
 			{open && (
 				<div className="absolute left-0 top-full z-50 mt-1 w-full rounded-md border border-border bg-popover shadow-md">
 					<Command>
-						<CommandInput placeholder="搜索工具..." className="text-xs" />
+						<CommandInput placeholder={t("debug.searchTools")} className="text-xs" />
 						<CommandList className="!max-h-[260px] overflow-y-auto [--cmdk-list-height:auto]">
-							<CommandEmpty>无匹配工具</CommandEmpty>
+							<CommandEmpty>{t("debug.noMatchingTools")}</CommandEmpty>
 							<CommandGroup>
 								{tools.map((t) => (
 									<CommandItem

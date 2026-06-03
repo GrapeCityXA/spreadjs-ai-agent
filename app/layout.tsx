@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { AppProviders } from "@/components/app-providers";
 import "./globals.css";
 
 const geistSans = localFont({
@@ -19,7 +19,7 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
 	title: "SpreadJS AI Agent",
-	description: "SpreadJS + AI 对话式电子表格",
+	description: "Conversational spreadsheets powered by SpreadJS and AI.",
 	icons: {
 		icon: [
 			{ url: "/favicon.svg", type: "image/svg+xml" },
@@ -36,7 +36,7 @@ export default function RootLayout({
 }>) {
 	return (
 		<html
-			lang="zh-CN"
+			lang="en"
 			className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
 			suppressHydrationWarning
 		>
@@ -49,7 +49,7 @@ export default function RootLayout({
 				<script dangerouslySetInnerHTML={{ __html: themeScript }} />
 			</head>
 			<body className="h-full overflow-hidden">
-				<TooltipProvider>{children}</TooltipProvider>
+				<AppProviders>{children}</AppProviders>
 			</body>
 		</html>
 	);

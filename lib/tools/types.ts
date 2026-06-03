@@ -1,7 +1,12 @@
 import type { z } from "zod/v4";
 import type { SpreadWorkbook, ToolResult } from "@/lib/agent/types";
+import type { AppLocale } from "@/lib/i18n";
 
 export const loadBridge = () => import("@/lib/spreadjs/bridge");
+
+export interface ToolExecutionContext {
+	locale: AppLocale;
+}
 
 /**
  * 统一工具定义。
@@ -19,8 +24,12 @@ export interface ToolDef<TInput = any, TOutput = unknown> {
 	/** 工具所属模块（网关/子工具标识，基础工具无需设置） */
 	module?: string;
 	/** 客户端 handler — 在浏览器中执行（操作 SpreadJS） */
-	handler?: (workbook: SpreadWorkbook, input: TInput) => Promise<ToolResult<TOutput>>;
+	handler?: (
+		workbook: SpreadWorkbook,
+		input: TInput,
+		context?: ToolExecutionContext,
+	) => Promise<ToolResult<TOutput>>;
 	/** 服务端 execute — 在 Node.js 中直接执行 */
-	execute?: (input: TInput) => Promise<ToolResult<TOutput>>;
+	execute?: (input: TInput, locale?: AppLocale) => Promise<ToolResult<TOutput>>;
 }
 

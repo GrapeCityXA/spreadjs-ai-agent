@@ -1,8 +1,8 @@
-import { convertToModelMessages, streamText } from "ai";
+import { convertToModelMessages, streamText, type ToolSet } from "ai";
 import { injectCacheControl } from "@/lib/llm/cache-control";
 import { type AppUIMessage } from "@/lib/agent/ui-message";
-import { toolDefinitions, baseToolNames, gatewayToolNames } from "@/lib/tools/registry";
-import { mcpManager } from "@/lib/mcp";
+import { getToolDefinitions, baseToolNames, gatewayToolNames } from "@/lib/tools/registry";
+import { getMcpManagerForRequest } from "@/lib/mcp";
 import { buildSystemPrompt } from "@/lib/agent/system-prompt";
 import { buildInjectionWarning } from "@/lib/agent/input-guard";
 import { recoverActiveModule } from "@/lib/agent/recover-module";
@@ -13,6 +13,8 @@ import { buildProviderOptions } from "@/lib/llm/provider-options";
 import { LLM_CONFIG, VISION_LLM_CONFIG, getMaxOutputTokens } from "@/lib/config";
 import { errorLogger } from "@/lib/logging";
 import { normalizeChatRouteError } from "@/lib/llm/error-normalize";
+import { createTranslator, normalizeLocale, type AppLocale } from "@/lib/i18n";
+import { resolveRequestLocale } from "@/lib/i18n/request";
 import "@/lib/env-check";
 
 export const maxDuration = 60;
@@ -41,11 +43,19 @@ function hasImageInMessages(messages: AppUIMessage[]): boolean {
 	);
 }
 
-async function resolveMcpTools() {
-	const mcpToolDefs = await mcpManager.getToolDefs();
+async function resolveMcpTools(req: Request, locale: AppLocale, mcpClientId?: string) {
+	const mcpManager = getMcpManagerForRequest(req, mcpClientId);
+	if (!mcpManager) {
+		return {
+			allTools: {},
+			mcpContext: undefined,
+			mcpToolNames: [],
+		};
+	}
+	const mcpToolDefs = await mcpManager.getToolDefs(locale);
 	return {
-		allTools: { ...toolDefinitions, ...mcpToolDefs },
-		mcpContext: (await mcpManager.buildContext()) || undefined,
+		allTools: mcpToolDefs,
+		mcpContext: (await mcpManager.buildContext(locale)) || undefined,
 		mcpToolNames: Object.keys(mcpToolDefs),
 	};
 }
@@ -106,26 +116,70 @@ const UI_STREAM_HEADERS: Record<string, string> = {
 // ─── Route Handler ─────────────────────────────────────
 
 export async function POST(req: Request) {
+	const fallbackLocale = resolveRequestLocale(req);
+	const fallbackT = createTranslator(fallbackLocale);
 	let messages: AppUIMessage[];
 	let workbookContext: string | undefined;
 	let taskContext: string | undefined;
 	let dirtyContext: string | undefined;
+	let locale: AppLocale = "en";
+	let requestId = `server_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+	let sessionId: string | undefined;
+	let clientLastMessageId: string | undefined;
+	let clientLastMessageRole: string | undefined;
+	let mcpClientId: string | undefined;
 
 	try {
-		({ messages, workbookContext, taskContext, dirtyContext } = await req.json());
+		const parsed = await req.json() as {
+			messages: AppUIMessage[];
+			workbookContext?: string;
+			taskContext?: string;
+			dirtyContext?: string;
+			locale?: string;
+			requestId?: string;
+			sessionId?: string;
+			clientLastMessageId?: string;
+			clientLastMessageRole?: string;
+			mcpClientId?: string;
+		};
+		({ messages, workbookContext, taskContext, dirtyContext } = parsed);
+		locale = normalizeLocale(parsed.locale);
+		if (parsed.requestId) requestId = parsed.requestId;
+		sessionId = parsed.sessionId;
+		clientLastMessageId = parsed.clientLastMessageId;
+		clientLastMessageRole = parsed.clientLastMessageRole;
+		mcpClientId = parsed.mcpClientId;
 	} catch {
-		return new Response("Invalid request body", { status: 400 });
+		return new Response(fallbackT("chat.invalidRequestBody"), { status: 400 });
 	}
 
-	let allTools: Awaited<ReturnType<typeof resolveMcpTools>>["allTools"];
+	const logContext = {
+		requestId,
+		sessionId,
+		clientLastMessageId,
+		clientLastMessageRole,
+		messageCount: messages.length,
+	};
+	errorLogger.log("chat/route", "Chat request started", {
+		level: "info",
+		details: logContext,
+	});
+
+	let mcpTools: Awaited<ReturnType<typeof resolveMcpTools>>["allTools"];
 	let mcpContext: string | undefined;
 	let mcpToolNames: string[];
 
 	try {
-		({ allTools, mcpContext, mcpToolNames } = await resolveMcpTools());
+		({ allTools: mcpTools, mcpContext, mcpToolNames } = await resolveMcpTools(req, locale, mcpClientId));
 	} catch {
-		return new Response("MCP initialization failed", { status: 500 });
+		errorLogger.log("chat/route", "MCP initialization failed", {
+			level: "error",
+			details: logContext,
+		});
+		return new Response(createTranslator(locale)("chat.mcpInitializationFailed"), { status: 500 });
 	}
+
+	const allTools = { ...getToolDefinitions(locale), ...mcpTools } as ToolSet;
 
 	const { model, provider, activeModelName, activeBaseURL } = resolveModel(messages);
 
@@ -138,14 +192,14 @@ export async function POST(req: Request) {
 		.filter((p) => p.type === "text")
 		.map((p) => p.text)
 		.join(" ") ?? "";
-	const injectionWarning = buildInjectionWarning(lastUserText);
+	const injectionWarning = buildInjectionWarning(lastUserText, locale);
 
 	const baseTools = baseToolNames.filter(n => n in allTools);
 	const gatewayTools = gatewayToolNames.filter(n => n in allTools);
 
 	const isAnthropic = provider === "anthropic";
 	const providerOptions = buildProviderOptions(provider, activeModelName, activeBaseURL);
-	const systemPrompt = buildSystemPrompt({ workbookContext, taskContext, mcpContext, dirtyContext });
+	const systemPrompt = buildSystemPrompt({ workbookContext, taskContext, mcpContext, dirtyContext, locale });
 
 	const modelMessages = await convertToModelMessages(messages);
 
@@ -175,9 +229,32 @@ export async function POST(req: Request) {
 								messages: injectCacheControl(stepMsgs, isAnthropic),
 							}),
 
-							onStepFinish: ({ toolCalls, toolResults, usage }) => {
+							onStepFinish: ({
+								finishReason,
+								rawFinishReason,
+								reasoningText,
+								text,
+								toolCalls,
+								toolResults,
+								usage,
+							}) => {
 								usageTracker.recordStep(usage);
 								moduleTracker.transition(toolCalls ?? []);
+								errorLogger.log("chat/step", "Chat generation step finished", {
+									level: "info",
+									details: {
+										...logContext,
+										finishReason,
+										rawFinishReason,
+										textLength: text.length,
+										reasoningLength: reasoningText?.length ?? 0,
+										toolCalls: (toolCalls ?? []).map((call) => call.toolName),
+										toolResults: (toolResults ?? []).map((result) => ({
+											toolName: result.toolName,
+											hasOutput: result.output != null,
+										})),
+									},
+								});
 								if (toolResults) {
 									for (const tr of toolResults) {
 										if (typeof tr.output === "object" && tr.output !== null) {
@@ -194,8 +271,34 @@ export async function POST(req: Request) {
 								errorLogger.capture("chat/stream", error);
 							},
 
-							onFinish: ({ totalUsage }) => {
+							onFinish: ({
+								finishReason,
+								rawFinishReason,
+								reasoningText,
+								steps,
+								text,
+								toolCalls,
+								toolResults,
+								totalUsage,
+							}) => {
 								usageTracker.finalize(totalUsage);
+								errorLogger.log("chat/finish", "Chat generation finished", {
+									level: "info",
+									details: {
+										...logContext,
+										finishReason,
+										rawFinishReason,
+										stepCount: steps.length,
+										textLength: text.length,
+										reasoningLength: reasoningText?.length ?? 0,
+										toolCalls: (toolCalls ?? []).map((call) => call.toolName),
+										toolResults: (toolResults ?? []).map((result) => ({
+											toolName: result.toolName,
+											hasOutput: result.output != null,
+										})),
+										totalUsage,
+									},
+								});
 							},
 						});
 
@@ -220,12 +323,12 @@ export async function POST(req: Request) {
 
 						attempt++;
 
-						const normalized = normalizeChatRouteError(e);
+						const normalized = normalizeChatRouteError(e, locale);
 
 						if (!isRetryableError(e) || attempt > MAX_RETRIES) {
 							// 超出重试上限或不可重试：通过 error chunk 告知客户端
 							console.error("[chat/route] fatal", normalized.message);
-							errorLogger.capture("chat/route", e, { attempt, normalizedMessage: normalized.message });
+							errorLogger.capture("chat/route", e, { ...logContext, attempt, normalizedMessage: normalized.message });
 							const errChunk = JSON.stringify({ type: "error", errorText: normalized.message });
 							controller.enqueue(encoder.encode(`data: ${errChunk}\n\n`));
 							controller.close();
@@ -235,7 +338,7 @@ export async function POST(req: Request) {
 						// 可重试：推送重试进度 chunk，然后等待退避时间
 						const delay = getRetryDelay(attempt, e);
 						console.warn(`[chat/route] retry ${attempt}/${MAX_RETRIES} in ${delay}ms:`, normalized.message);
-						errorLogger.capture("chat/route/retry", e, { attempt, delay, normalizedMessage: normalized.message });
+						errorLogger.capture("chat/route/retry", e, { ...logContext, attempt, delay, normalizedMessage: normalized.message });
 
 						const retryChunk = JSON.stringify({
 							type: "data-retry-status",

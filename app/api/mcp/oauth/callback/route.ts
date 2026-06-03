@@ -1,6 +1,11 @@
-import { mcpManager } from "@/lib/mcp";
+import { mcpRegistry } from "@/lib/mcp";
+import { oauthStore } from "@/lib/mcp/oauth-store";
+import { createTranslator } from "@/lib/i18n";
+import { resolveRequestLocale } from "@/lib/i18n/request";
 
 export async function GET(req: Request) {
+	const locale = resolveRequestLocale(req);
+	const t = createTranslator(locale);
 	const { searchParams } = new URL(req.url);
 	const code = searchParams.get("code") ?? "";
 	const state = searchParams.get("state") ?? "";
@@ -11,10 +16,13 @@ export async function GET(req: Request) {
 	if (error) {
 		resultPayload = { success: false, error };
 	} else if (!code || !state) {
-		resultPayload = { success: false, error: "Missing code or state" };
+		resultPayload = { success: false, error: t("mcp.oauthCallbackMissingState") };
 	} else {
 		try {
-			const serverName = await mcpManager.completeAuth(state, code);
+			const resolved = oauthStore.peekState(state);
+			if (!resolved) throw new Error(t("mcp.oauthStateInvalid"));
+			const mcpManager = mcpRegistry.get(resolved.clientId);
+			const serverName = await mcpManager.completeAuth(state, code, locale);
 			resultPayload = { success: true, serverName };
 		} catch (e) {
 			resultPayload = {
@@ -28,10 +36,10 @@ export async function GET(req: Request) {
 	// escape </ 防止 script block 被截断（XSS）
 	const payload = JSON.stringify(resultPayload).replace(/</g, "\\u003c");
 	const displayMsg = resultPayload.success
-		? "授权成功，正在关闭…"
-		: `授权失败: ${escapeHtml(resultPayload.error ?? "unknown")}`;
+		? t("mcp.oauthCallbackSuccess")
+		: t("mcp.oauthCallbackFailure", { error: escapeHtml(resultPayload.error ?? t("mcp.unknownError")) });
 	const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>OAuth 授权</title></head>
+<html><head><meta charset="utf-8"><title>${t("mcp.oauthWindowTitle")}</title></head>
 <body>
 <p>${displayMsg}</p>
 <script>

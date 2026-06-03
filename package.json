@@ -28,6 +28,7 @@
     "@grapecity-software/spread-sheets-designer": "^19.0.1",
     "@grapecity-software/spread-sheets-designer-react": "^19.0.1",
     "@grapecity-software/spread-sheets-designer-resources-cn": "^19.0.1",
+    "@grapecity-software/spread-sheets-designer-resources-en": "19.0.1",
     "@grapecity-software/spread-sheets-formula-panel": "^19.0.1",
     "@grapecity-software/spread-sheets-ganttsheet": "^19.0.1",
     "@grapecity-software/spread-sheets-io": "^19.0.1",

@@ -16,6 +16,7 @@ import {
 	MixedGroup,
 } from "@/components/ai-elements/tool-call-display";
 import { createPortal } from "react-dom";
+import { useTranslation } from "@/lib/i18n/react";
 
 // ============================================================================
 // SessionPreview — 会话历史悬停预览面板（固定 500×300，显示在 hover 会话左侧）
@@ -34,6 +35,7 @@ interface SessionPreviewProps {
 }
 
 export function SessionPreview({ sessionId, anchor, onMouseEnter, onMouseLeave }: SessionPreviewProps) {
+	const { t } = useTranslation();
 	const [session, setSession] = useState<Session | null>(null);
 
 	useEffect(() => {
@@ -59,7 +61,7 @@ export function SessionPreview({ sessionId, anchor, onMouseEnter, onMouseLeave }
 		return createPortal(
 			<div className={panelClass} style={style} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
 				<div className="flex items-center justify-center h-full">
-					<span className="text-xs text-muted-foreground">加载中...</span>
+					<span className="text-xs text-muted-foreground">{t("common.loading")}</span>
 				</div>
 			</div>, document.body
 		);
@@ -80,6 +82,7 @@ export function SessionPreview({ sessionId, anchor, onMouseEnter, onMouseLeave }
 
 /** 复用 ChatPanel 的消息渲染逻辑，按相同规则分组工具调用和思考过程 */
 function PreviewMessage({ message }: { message: AppUIMessage }) {
+	const { t } = useTranslation();
 	return (
 		<Message from={message.role}>
 			<MessageContent>
@@ -133,14 +136,14 @@ function PreviewMessage({ message }: { message: AppUIMessage }) {
 									<HoverCardTrigger asChild>
 										<span className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/50 px-2.5 py-1 text-xs font-medium text-foreground cursor-default mt-1">
 											<ImageIcon className="size-3.5 text-muted-foreground" />
-											<span className="max-w-[160px] truncate">{fp.filename ?? "图片"}</span>
+											<span className="max-w-[160px] truncate">{fp.filename ?? t("common.image")}</span>
 										</span>
 									</HoverCardTrigger>
 									<HoverCardContent className="w-auto max-w-xs p-2" side="top">
 										<div className="relative h-48 w-72 max-w-[80vw]">
 											<Image
 												src={fp.url}
-												alt={fp.filename ?? "图片"}
+												alt={fp.filename ?? t("common.image")}
 												fill
 												unoptimized
 												sizes="288px"

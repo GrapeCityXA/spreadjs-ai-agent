@@ -1,5 +1,8 @@
 import type { ToolDef } from "./types";
 import * as defs from "./defs";
+import { jsonSchema } from "ai";
+import { DEFAULT_LOCALE, type AppLocale } from "@/lib/i18n";
+import { getLocalizedToolInputSchema, getLocalizedToolText } from "./localization";
 export {
 	baseToolNames,
 	builtinToolNames,
@@ -13,36 +16,43 @@ export {
 	type ModuleToolName,
 } from "@/lib/tools/names";
 
-// ─── 工具注册 ───────────────────────────────────────────────
+// ─── Tool registry ───────────────────────────────────────────
 
 const allToolsArray: ToolDef[] = Object.values(defs) as ToolDef[];
 const toolMap = new Map(allToolsArray.map((t) => [t.name, t]));
 
-/**
- * 给 streamText 的 tools 配置。
- * - 客户端工具（有 handler）：仅 schema，由前端 onToolCall 拦截
- * - 服务端工具（有 execute）：schema + execute，由 streamText 自动执行
- */
-export const toolDefinitions: Record<string, {
+export function getToolDefinitions(locale: AppLocale = DEFAULT_LOCALE): Record<string, {
 	description: string;
-	inputSchema: ToolDef["inputSchema"];
+	inputSchema: ToolDef["inputSchema"] | ReturnType<typeof jsonSchema>;
 	execute?: (args: Record<string, unknown>) => Promise<unknown>;
-}> = Object.fromEntries(
-	allToolsArray.map((t) => [
-		t.name,
-		t.execute
-			? { description: t.description, inputSchema: t.inputSchema, execute: t.execute }
-			: { description: t.description, inputSchema: t.inputSchema },
-	]),
-);
+}> {
+	return Object.fromEntries(
+		allToolsArray.map((tool) => {
+			const text = getLocalizedToolText(tool, locale);
+			const inputSchema = getLocalizedToolInputSchema(tool.inputSchema, locale);
+			return [
+				tool.name,
+				tool.execute
+					? {
+						description: text.description,
+						inputSchema,
+						execute: (args: Record<string, unknown>) => tool.execute!(args, locale),
+					}
+					: { description: text.description, inputSchema },
+			];
+		}),
+	);
+}
+
+export const toolDefinitions = getToolDefinitions();
 
 /** 工具总数 */
 export const toolCount = allToolsArray.length;
 
-/** 获取工具中文名 */
-export function getDisplayName(name: string): string {
+/** Get a localized display name for a built-in or MCP tool. */
+export function getDisplayName(name: string, locale: AppLocale = DEFAULT_LOCALE): string {
 	const builtin = toolMap.get(name);
-	if (builtin) return builtin.displayName;
+	if (builtin) return getLocalizedToolText(builtin, locale).displayName;
 
 	const mcp = parseMcpName(name);
 	if (mcp) return mcp.toolName;
@@ -71,21 +81,31 @@ export function isServerTool(name: string): boolean {
 }
 
 /** Debug 专用：获取工具完整定义 */
-export function getToolDef(name: string): ToolDef | undefined {
-	return toolMap.get(name);
+export function getToolDef(name: string, locale: AppLocale = DEFAULT_LOCALE): ToolDef | undefined {
+	const tool = toolMap.get(name);
+	if (!tool) return undefined;
+	const text = getLocalizedToolText(tool, locale);
+	return {
+		...tool,
+		displayName: text.displayName,
+		description: text.description,
+		execute: tool.execute
+			? ((input) => tool.execute!(input, locale))
+			: undefined,
+	};
 }
 
 /** Debug 专用：所有工具元信息列表 */
-export function getToolList(): Array<{
+export function getToolList(locale: AppLocale = DEFAULT_LOCALE): Array<{
 	name: string;
 	displayName: string;
 	hasHandler: boolean;
 	hasExecute: boolean;
 }> {
-	return allToolsArray.map((t) => ({
-		name: t.name,
-		displayName: t.displayName,
-		hasHandler: !!t.handler,
-		hasExecute: !!t.execute,
+	return allToolsArray.map((tool) => ({
+		name: tool.name,
+		displayName: getLocalizedToolText(tool, locale).displayName,
+		hasHandler: !!tool.handler,
+		hasExecute: !!tool.execute,
 	}));
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useTranslation } from "@/lib/i18n/react";
 import type { FieldMeta } from "@/lib/debug/schema-introspect";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { FieldControl } from "./field-controls";
@@ -12,6 +13,7 @@ interface SchemaFormProps {
 }
 
 export function SchemaForm({ fields, values, onChange }: SchemaFormProps) {
+	const { t } = useTranslation();
 	const required = fields.filter((f) => f.required);
 	const optional = fields.filter((f) => !f.required);
 
@@ -27,7 +29,7 @@ export function SchemaForm({ fields, values, onChange }: SchemaFormProps) {
 			{required.length > 0 && (
 				<fieldset className="space-y-2.5">
 					<legend className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-						必填
+						{t("debug.required")}
 					</legend>
 					{required.map((f) => (
 						<FieldControl
@@ -44,25 +46,29 @@ export function SchemaForm({ fields, values, onChange }: SchemaFormProps) {
 					fields={optional}
 					values={values}
 					onChange={onChange}
+					label={t("debug.optional", { active: activeCount(optional, values), total: optional.length })}
 				/>
 			)}
 		</div>
 	);
 }
 
+function activeCount(fields: FieldMeta[], values: Record<string, unknown>): number {
+	return fields.filter((field) => values[field.name] !== undefined && values[field.name] !== "").length;
+}
+
 function OptionalSection({
 	fields,
 	values,
 	onChange,
+	label,
 }: {
 	fields: FieldMeta[];
 	values: Record<string, unknown>;
 	onChange: (values: Record<string, unknown>) => void;
+	label: string;
 }) {
 	const [open, setOpen] = useState(false);
-	const activeCount = fields.filter(
-		(f) => values[f.name] !== undefined && values[f.name] !== "",
-	).length;
 
 	return (
 		<div className="rounded-md border border-border/50">
@@ -76,7 +82,7 @@ function OptionalSection({
 				) : (
 					<ChevronRightIcon className="size-3" />
 				)}
-				可选 ({activeCount}/{fields.length})
+				{label}
 			</button>
 			{open && (
 				<div className="space-y-2.5 border-t border-border/30 px-2.5 py-2.5">

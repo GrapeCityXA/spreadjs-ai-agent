@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslation } from "@/lib/i18n/react";
 import type { FieldMeta } from "@/lib/debug/schema-introspect";
 import { PlusIcon, XIcon } from "lucide-react";
 import { buildDefaults } from "./schema-form";
@@ -104,6 +105,7 @@ function BooleanField({ field, value, onChange }: FieldControlProps) {
 }
 
 function EnumField({ field, value, onChange }: FieldControlProps) {
+	const { t } = useTranslation();
 	const options = field.enumValues ?? [];
 
 	return (
@@ -114,7 +116,7 @@ function EnumField({ field, value, onChange }: FieldControlProps) {
 				onChange={(e) => onChange(e.target.value || undefined)}
 				className="w-full rounded-md border border-border bg-background px-2.5 py-1 text-xs outline-none focus:ring-1 focus:ring-primary/40"
 			>
-				{!field.required && <option value="">— 不设置 —</option>}
+				{!field.required && <option value="">{t("debug.unset")}</option>}
 				{options.map((opt) => (
 					<option key={opt} value={opt}>
 						{opt}
@@ -126,6 +128,7 @@ function EnumField({ field, value, onChange }: FieldControlProps) {
 }
 
 function ArrayField({ field, value, onChange }: FieldControlProps) {
+	const { t } = useTranslation();
 	const items = Array.isArray(value) ? value : [];
 
 	const addItem = () => {
@@ -155,7 +158,7 @@ function ArrayField({ field, value, onChange }: FieldControlProps) {
 					className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-accent transition-colors"
 				>
 					<PlusIcon className="size-3" />
-					添加
+					{t("debug.add")}
 				</button>
 			</div>
 			{items.map((item, i) => (
@@ -204,7 +207,7 @@ function ArrayField({ field, value, onChange }: FieldControlProps) {
 			))}
 			{items.length === 0 && (
 				<p className="text-[10px] text-muted-foreground italic px-1">
-					点击&quot;添加&quot;添加项目
+					{t("debug.addItem")}
 				</p>
 			)}
 		</div>

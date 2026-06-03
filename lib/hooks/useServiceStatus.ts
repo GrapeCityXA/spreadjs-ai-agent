@@ -29,7 +29,7 @@ export function useServiceStatus(): ServiceStatus {
 				});
 			})
 			.catch(() => {
-				setStatus({ available: false, missing: ["(检测失败)"], visionAvailable: false, loading: false });
+				setStatus({ available: false, missing: ["(check failed)"], visionAvailable: false, loading: false });
 			});
 	}, []);
 

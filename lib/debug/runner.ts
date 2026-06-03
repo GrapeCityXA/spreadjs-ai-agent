@@ -1,4 +1,6 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
+import { createTranslator, type AppLocale } from "@/lib/i18n";
+import { loadBridge } from "@/lib/tools/types";
 import type { DebugSession } from "./types";
 import { DebugLogger } from "./logger";
 import { getToolDef, getHandler, isServerTool } from "@/lib/tools/registry";
@@ -14,13 +16,15 @@ export async function executeDebugDirect(
 	toolName: string,
 	rawInput: unknown,
 	workbook: SpreadWorkbook | null,
+	locale: AppLocale = "en",
 ): Promise<DebugSession> {
 	const logger = new DebugLogger();
+	const t = createTranslator(locale);
 
 	// 1. Schema Validation
 	const toolDef = logger.stage("schema_validation", () => {
-		const def = getToolDef(toolName);
-		if (!def) throw new Error(`工具 "${toolName}" 不存在`);
+		const def = getToolDef(toolName, locale);
+		if (!def) throw new Error(t("debug.toolNotFound", { toolName }));
 		const parsed = def.inputSchema.safeParse(rawInput);
 		if (!parsed.success) {
 			throw new Error(formatZodError(parsed.error));
@@ -35,7 +39,7 @@ export async function executeDebugDirect(
 			return { type: "server" as const };
 		}
 		const handler = getHandler(toolName);
-		if (!handler) throw new Error(`工具 "${toolName}" 无可用 handler`);
+		if (!handler) throw new Error(t("debug.handlerMissing", { toolName }));
 		return { type: "client" as const, handler };
 	});
 	if (!resolved) return logger.toSession(toolName);
@@ -43,7 +47,7 @@ export async function executeDebugDirect(
 	// 3. Environment Check
 	logger.stage("env_check", () => {
 		if (resolved.type === "client" && !AGENT_TOOLS.has(toolName) && !workbook) {
-			throw new Error("SpreadJS 尚未初始化，无法执行客户端工具");
+			throw new Error(t("debug.clientWorkbookRequired"));
 		}
 		return {
 			executionSide: resolved.type,
@@ -58,15 +62,20 @@ export async function executeDebugDirect(
 		if (resolved.type === "server") {
 			const res = await fetch("/api/debug/tool-call", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ toolName, input: toolDef.input }),
+				headers: {
+					"Content-Type": "application/json",
+					"x-spreadjs-locale": locale,
+				},
+				body: JSON.stringify({ toolName, input: toolDef.input, locale }),
 			});
 			if (!res.ok) {
 				const body = await res.text();
-				throw new Error(`服务端执行失败 (${res.status}): ${body}`);
+				throw new Error(t("debug.serverExecutionFailed", { status: res.status, body }));
 			}
 			return res.json();
 		}
+		const bridge = await loadBridge();
+		bridge.setBridgeLocale(locale);
 		return resolved.handler(workbook!, toolDef.input);
 	});
 	if (logger.hasError()) return logger.toSession(toolName);

@@ -1,4 +1,5 @@
 import { APICallError } from "ai";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 
 const MESSAGE_KEYS = [
 	"message",
@@ -78,31 +79,54 @@ function includesLowBalanceSignal(text: string): boolean {
 	return LOW_BALANCE_RE.some((re) => re.test(text));
 }
 
-function buildUserMessage(status: number, detail: string | null): string {
+function buildUserMessage(status: number, detail: string | null, locale: AppLocale): string {
+	const resolved = normalizeLocale(locale);
+	const isZh = resolved === "zh-CN";
+
 	if (detail && includesLowBalanceSignal(detail)) {
-		return `模型服务余额或额度不足：${detail}`;
+		return isZh
+			? `模型服务余额或额度不足：${detail}`
+			: `The model service is out of balance or quota: ${detail}`;
 	}
 
 	if (status === 401) {
 		if (detail && !/^unauthorized$/i.test(detail)) {
-			return `模型服务鉴权失败（401）：${detail}`;
+			return isZh
+				? `模型服务鉴权失败（401）：${detail}`
+				: `Model service authentication failed (401): ${detail}`;
 		}
-		return "模型服务鉴权失败（401 Unauthorized），请检查 API Key 是否正确。";
+		return isZh
+			? "模型服务鉴权失败（401 Unauthorized），请检查 API Key 是否正确。"
+			: "Model service authentication failed (401 Unauthorized). Check whether the API key is valid.";
 	}
 
 	if (status === 403) {
 		if (detail && !/^forbidden$/i.test(detail)) {
-			return `模型服务拒绝请求（403）：${detail}`;
+			return isZh
+				? `模型服务拒绝请求（403）：${detail}`
+				: `Model service rejected the request (403): ${detail}`;
 		}
-		return "模型服务拒绝请求（403 Forbidden）。常见原因：API Key 无权限、余额不足或模型未开通。";
+		return isZh
+			? "模型服务拒绝请求（403 Forbidden）。常见原因：API Key 无权限、余额不足或模型未开通。"
+			: "Model service rejected the request (403 Forbidden). Common causes include missing permissions, insufficient balance, or an unavailable model.";
 	}
 
 	if (status === 429) {
-		if (detail) return `模型服务限流或额度不足（429）：${detail}`;
-		return "模型服务限流或额度不足（429 Too Many Requests）。";
+		if (detail) {
+			return isZh
+				? `模型服务限流或额度不足（429）：${detail}`
+				: `Model service rate-limited the request or quota is exhausted (429): ${detail}`;
+		}
+		return isZh
+			? "模型服务限流或额度不足（429 Too Many Requests）。"
+			: "Model service rate-limited the request or quota is exhausted (429 Too Many Requests).";
 	}
 
-	return detail ?? "模型服务调用失败，请稍后重试。";
+	return detail ?? (
+		isZh
+			? "模型服务调用失败，请稍后重试。"
+			: "Model service call failed. Please try again later."
+	);
 }
 
 function pickStatus(error: unknown): number {
@@ -115,7 +139,10 @@ function pickStatus(error: unknown): number {
 	return 500;
 }
 
-export function normalizeChatRouteError(error: unknown): { status: number; message: string } {
+export function normalizeChatRouteError(
+	error: unknown,
+	locale: AppLocale = "en",
+): { status: number; message: string } {
 	const detailCandidates: unknown[] = [];
 
 	if (APICallError.isInstance(error)) {
@@ -135,6 +162,5 @@ export function normalizeChatRouteError(error: unknown): { status: number; messa
 	}
 
 	const status = pickStatus(error);
-	return { status, message: buildUserMessage(status, detail) };
+	return { status, message: buildUserMessage(status, detail, locale) };
 }
-

@@ -1,4 +1,5 @@
 import { jsonSchema } from "ai";
+import { createTranslator, type AppLocale } from "@/lib/i18n";
 import {
 	startAuthorization,
 } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -16,10 +17,24 @@ type McpToolDef = {
 	execute: (args: Record<string, unknown>) => Promise<ToolResult>;
 };
 
-class McpManager {
+export class McpManager {
 	private clients = new Map<string, McpClient>();
 	private configs = new Map<string, McpServerConfig>();
 	private providers = new Map<string, McpOAuthProvider>();
+
+	constructor(private clientId: string) {}
+
+	private localizeOAuthFlowError(
+		error: unknown,
+		t: ReturnType<typeof createTranslator>,
+		key: "mcp.oauthStartFailed" | "mcp.oauthCompleteFailed",
+	): Error {
+		const message = error instanceof Error ? error.message : String(error);
+		if (isNetworkError(error) || /^OAuth AS metadata returned\b/.test(message)) {
+			return new Error(t(key, { error: message }));
+		}
+		return error instanceof Error ? error : new Error(message);
+	}
 
 	// ── 连接管理 ─────────────────────────────────────────────
 
@@ -66,7 +81,7 @@ class McpManager {
 				if (existing) await existing.close();
 
 				// 有保存的 token → 带 OAuthProvider 重连；否则裸连，401 再标记
-				const provider = oauthStore.hasTokens(name)
+				const provider = oauthStore.hasTokens(this.clientId, name)
 					? this.getOrCreateProvider(name, serverConfig)
 					: undefined;
 				const client = new McpClient(serverConfig, provider);
@@ -89,7 +104,7 @@ class McpManager {
 	private getOrCreateProvider(name: string, config: McpServerConfig): McpOAuthProvider {
 		let provider = this.providers.get(name);
 		if (!provider) {
-			provider = new McpOAuthProvider(name, config);
+			provider = new McpOAuthProvider(this.clientId, name, config);
 			this.providers.set(name, provider);
 		}
 		return provider;
@@ -97,107 +112,117 @@ class McpManager {
 
 	// ── OAuth 流程 ───────────────────────────────────────────
 
-	async startAuth(serverName: string): Promise<{ authorizationUrl: string }> {
+	async startAuth(serverName: string, locale: AppLocale = "en"): Promise<{ authorizationUrl: string }> {
+		const t = createTranslator(locale);
 		const config = this.configs.get(serverName);
-		if (!config) throw new Error(`Server "${serverName}" not found`);
+		if (!config) throw new Error(t("mcp.serverNotFound", { name: serverName }));
+		try {
+			const provider = this.getOrCreateProvider(serverName, config);
+			const { authorizationServerUrl, authorizationServerMetadata } =
+				await discoverOAuthServer(config.url);
 
-		const provider = this.getOrCreateProvider(serverName, config);
-		const { authorizationServerUrl, authorizationServerMetadata } =
-			await discoverOAuthServer(config.url);
+			// 动态客户端注册（RFC 7591）
+			let clientInfo = await provider.clientInformation();
+			const meta = authorizationServerMetadata;
+			if (!clientInfo && meta?.registration_endpoint) {
+				const regRes = await rawPost(
+					String(meta.registration_endpoint),
+					JSON.stringify(provider.clientMetadata),
+					"application/json",
+				);
+				if (!regRes.ok) throw new Error(t("mcp.dynamicRegistrationFailed", { status: regRes.status }));
+				const fullInfo = await regRes.json() as OAuthClientInformationFull;
+				await provider.saveClientInformation(fullInfo);
+				clientInfo = fullInfo;
+			}
+			if (!clientInfo) throw new Error(t("mcp.clientInfoUnavailable"));
 
-		// 动态客户端注册（RFC 7591）
-		let clientInfo = await provider.clientInformation();
-		const meta = authorizationServerMetadata;
-		if (!clientInfo && meta?.registration_endpoint) {
-			const regRes = await rawPost(
-				String(meta.registration_endpoint),
-				JSON.stringify(provider.clientMetadata),
-				"application/json",
+			// PKCE authorization URL
+			const state = await provider.state();
+			const { authorizationUrl, codeVerifier } = await startAuthorization(
+				authorizationServerUrl,
+				{
+					metadata: authorizationServerMetadata as AuthorizationServerMetadata,
+					clientInformation: clientInfo,
+					redirectUrl: provider.redirectUrl,
+					scope: config.scopes,
+					state,
+				},
 			);
-			if (!regRes.ok) throw new Error(`Dynamic registration failed: HTTP ${regRes.status}`);
-			const fullInfo = await regRes.json() as OAuthClientInformationFull;
-			await provider.saveClientInformation(fullInfo);
-			clientInfo = fullInfo;
+
+			await provider.saveCodeVerifier(codeVerifier);
+			return { authorizationUrl: authorizationUrl.toString() };
+		} catch (error) {
+			throw this.localizeOAuthFlowError(error, t, "mcp.oauthStartFailed");
 		}
-		if (!clientInfo) throw new Error("No client information available");
-
-		// PKCE authorization URL
-		const state = await provider.state();
-		const { authorizationUrl, codeVerifier } = await startAuthorization(
-			authorizationServerUrl,
-			{
-				metadata: authorizationServerMetadata as AuthorizationServerMetadata,
-				clientInformation: clientInfo,
-				redirectUrl: provider.redirectUrl,
-				scope: config.scopes,
-				state,
-			},
-		);
-
-		await provider.saveCodeVerifier(codeVerifier);
-		return { authorizationUrl: authorizationUrl.toString() };
 	}
 
-	async completeAuth(state: string, code: string): Promise<string> {
-		const serverName = oauthStore.resolveState(state);
-		if (!serverName) throw new Error("Invalid or expired OAuth state");
+	async completeAuth(state: string, code: string, locale: AppLocale = "en"): Promise<string> {
+		const t = createTranslator(locale);
+		const resolved = oauthStore.resolveState(state);
+		if (!resolved) throw new Error(t("mcp.oauthStateInvalid"));
+		if (resolved.clientId !== this.clientId) throw new Error(t("mcp.oauthStateInvalid"));
+		const { serverName } = resolved;
 
 		const config = this.configs.get(serverName);
-		if (!config) throw new Error(`Server "${serverName}" not found`);
-
-		const provider = this.getOrCreateProvider(serverName, config);
-		const clientInfo = await provider.clientInformation();
-		if (!clientInfo) throw new Error("No client information");
-
-		const codeVerifier = await provider.codeVerifier();
-		const { authorizationServerUrl, authorizationServerMetadata } =
-			await discoverOAuthServer(config.url);
-
-		// Token exchange
-		const tokenUrl = authorizationServerMetadata?.token_endpoint
-			? String(authorizationServerMetadata.token_endpoint)
-			: new URL("/token", authorizationServerUrl).href;
-		const tokenParams = new URLSearchParams({
-			grant_type: "authorization_code",
-			code,
-			code_verifier: codeVerifier,
-			redirect_uri: String(provider.redirectUrl),
-			client_id: clientInfo.client_id,
-		});
-		if (clientInfo.client_secret) {
-			tokenParams.set("client_secret", clientInfo.client_secret);
-		}
-		const tokenRes = await rawPost(
-			tokenUrl, tokenParams.toString(), "application/x-www-form-urlencoded",
-		);
-		if (!tokenRes.ok) throw new Error(`Token exchange failed: HTTP ${tokenRes.status}`);
-		const tokens = await tokenRes.json() as OAuthTokens;
-
-		await provider.saveTokens(tokens);
-
-		// 用新 token 重连
-		const existing = this.clients.get(serverName);
-		if (existing) await existing.close();
-
-		const client = new McpClient(config, provider);
-		this.clients.set(serverName, client);
+		if (!config) throw new Error(t("mcp.serverNotFound", { name: serverName }));
 		try {
-			await client.connect();
-		} catch (e) {
-			console.error(`[MCP] ${serverName} OAuth 连接失败:`, e instanceof Error ? e.message : e);
-		}
+			const provider = this.getOrCreateProvider(serverName, config);
+			const clientInfo = await provider.clientInformation();
+			if (!clientInfo) throw new Error(t("mcp.clientInfoMissing"));
 
-		return serverName;
+			const codeVerifier = await provider.codeVerifier();
+			const { authorizationServerUrl, authorizationServerMetadata } =
+				await discoverOAuthServer(config.url);
+
+			// Token exchange
+			const tokenUrl = authorizationServerMetadata?.token_endpoint
+				? String(authorizationServerMetadata.token_endpoint)
+				: new URL("/token", authorizationServerUrl).href;
+			const tokenParams = new URLSearchParams({
+				grant_type: "authorization_code",
+				code,
+				code_verifier: codeVerifier,
+				redirect_uri: String(provider.redirectUrl),
+				client_id: clientInfo.client_id,
+			});
+			if (clientInfo.client_secret) {
+				tokenParams.set("client_secret", clientInfo.client_secret);
+			}
+			const tokenRes = await rawPost(
+				tokenUrl, tokenParams.toString(), "application/x-www-form-urlencoded",
+			);
+			if (!tokenRes.ok) throw new Error(t("mcp.tokenExchangeFailed", { status: tokenRes.status }));
+			const tokens = await tokenRes.json() as OAuthTokens;
+
+			await provider.saveTokens(tokens);
+
+			// 用新 token 重连
+			const existing = this.clients.get(serverName);
+			if (existing) await existing.close();
+
+			const client = new McpClient(config, provider);
+			this.clients.set(serverName, client);
+			try {
+				await client.connect();
+			} catch (e) {
+				console.error(`[MCP] ${serverName} OAuth 连接失败:`, e instanceof Error ? e.message : e);
+			}
+
+			return serverName;
+		} catch (error) {
+			throw this.localizeOAuthFlowError(error, t, "mcp.oauthCompleteFailed");
+		}
 	}
 
 	revokeAuth(serverName: string) {
-		oauthStore.clear(serverName);
+		oauthStore.clear(this.clientId, serverName);
 		this.providers.delete(serverName);
 	}
 
 	// ── 工具定义 ─────────────────────────────────────────────
 
-	async getToolDefs(): Promise<Record<string, McpToolDef>> {
+	async getToolDefs(locale: AppLocale = "en"): Promise<Record<string, McpToolDef>> {
 		const defs: Record<string, McpToolDef> = {};
 
 		for (const [serverName, client] of this.clients) {
@@ -207,7 +232,7 @@ class McpManager {
 				defs[key] = {
 					description: tool.description,
 					inputSchema: jsonSchema(tool.inputSchema),
-					execute: (args: Record<string, unknown>) => this.callTool(serverName, tool.name, args),
+					execute: (args: Record<string, unknown>) => this.callTool(serverName, tool.name, args, locale),
 				};
 			}
 		}
@@ -215,19 +240,20 @@ class McpManager {
 		return defs;
 	}
 
-	async buildContext(): Promise<string> {
+	async buildContext(locale: AppLocale = "en"): Promise<string> {
+		const t = createTranslator(locale);
 		const parts: string[] = [];
 
 		for (const [name, client] of this.clients) {
 			if (!client.connected) continue;
 			if (client.instructions) {
-				parts.push(`[MCP Server: ${name}]\n${client.instructions}`);
+				parts.push(`${t("mcp.context.server", { name })}\n${client.instructions}`);
 			}
 			if (client.tools.length > 0) {
 				const toolList = client.tools
 					.map((t) => `- mcp__${name}__${t.name}: ${t.description}`)
 					.join("\n");
-				parts.push(`[MCP Tools: ${name}]\n${toolList}`);
+				parts.push(`${t("mcp.context.tools", { name })}\n${toolList}`);
 			}
 		}
 
@@ -240,10 +266,12 @@ class McpManager {
 		serverName: string,
 		toolName: string,
 		args: Record<string, unknown>,
+		locale: AppLocale = "en",
 	): Promise<ToolResult> {
+		const t = createTranslator(locale);
 		const client = this.clients.get(serverName);
-		if (!client) return { success: false, error: `MCP server "${serverName}" not found` };
-		if (!client.connected) return { success: false, error: `MCP server "${serverName}" not connected` };
+		if (!client) return { success: false, error: t("mcp.serverNotFound", { name: serverName }) };
+		if (!client.connected) return { success: false, error: t("mcp.serverNotConnected", { name: serverName }) };
 
 		try {
 			const result = await client.callTool(toolName, args);
@@ -257,7 +285,7 @@ class McpManager {
 				} catch {
 					return {
 						success: false,
-						error: `Network error`,
+						error: t("mcp.networkError"),
 					};
 				}
 			}
@@ -270,9 +298,9 @@ class McpManager {
 	private getOAuthStatus(name: string): OAuthStatus | undefined {
 		const client = this.clients.get(name);
 		if (client?.needsAuth) return "unauthorized";
-		const tokens = oauthStore.getTokens(name);
+		const tokens = oauthStore.getTokens(this.clientId, name);
 		if (!tokens) return undefined;
-		const savedAt = oauthStore.getSavedAt(name);
+		const savedAt = oauthStore.getSavedAt(this.clientId, name);
 		if (tokens.expires_in && savedAt) {
 			const expiresAt = savedAt + tokens.expires_in * 1000;
 			if (Date.now() > expiresAt) return "expired";
@@ -309,6 +337,11 @@ class McpManager {
 	hasServers(): boolean {
 		return this.clients.size > 0;
 	}
-}
 
-export const mcpManager = new McpManager();
+	async close(): Promise<void> {
+		await Promise.all([...this.clients.values()].map((client) => client.close()));
+		this.clients.clear();
+		this.configs.clear();
+		this.providers.clear();
+	}
+}

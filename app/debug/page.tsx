@@ -6,19 +6,22 @@ import { SpreadJSProvider } from "@/lib/spreadjs/context";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { DebugPanel } from "@/components/debug/debug-panel";
 import { useResizablePanel } from "@/lib/hooks/useResizablePanel";
+import { useTranslation } from "@/lib/i18n/react";
 import { BugIcon, PanelRightCloseIcon, PanelRightOpenIcon } from "lucide-react";
 
-const SpreadJSDesigner = dynamic(
-	() => import("@/components/SpreadJSDesigner"),
-	{
-		ssr: false,
-		loading: () => (
-			<div className="flex h-full items-center justify-center text-muted-foreground">
-				加载 SpreadJS Designer...
-			</div>
-		),
-	},
-);
+function LoadingDesigner() {
+	const { t } = useTranslation();
+	return (
+		<div className="flex h-full items-center justify-center text-muted-foreground">
+			{t("app.loadingDesigner")}
+		</div>
+	);
+}
+
+const SpreadJSDesigner = dynamic(() => import("@/components/SpreadJSDesigner"), {
+	ssr: false,
+	loading: () => <LoadingDesigner />,
+});
 
 const HANDLE_BASE: React.CSSProperties = {
 	width: 2,
@@ -35,6 +38,7 @@ const BG_IDLE = "hsl(var(--border) / 0.6)";
 const BG_HOVER = "hsl(var(--primary) / 0.25)";
 
 export default function DebugPage() {
+	const { t, locale } = useTranslation();
 	const [panelOpen, setPanelOpen] = useState(true);
 	const { width, dragging, handleProps } = useResizablePanel();
 
@@ -59,7 +63,7 @@ export default function DebugPage() {
 
 				{/* 左侧：SpreadJS Designer */}
 				<div className="relative flex-1 min-w-0 overflow-hidden">
-					<ErrorBoundary label="SpreadJS Designer">
+					<ErrorBoundary label={t("app.spreadjsDesigner")} locale={locale}>
 						<SpreadJSDesigner />
 					</ErrorBoundary>
 					{/* 收起状态下的展开按钮 */}
@@ -70,7 +74,7 @@ export default function DebugPage() {
 							className="absolute right-2 top-2 z-10 inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/90 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur-sm hover:text-foreground transition-colors"
 						>
 							<BugIcon className="size-3.5 text-amber-500" />
-							Debug
+							{t("common.debug")}
 							<PanelRightOpenIcon className="size-3.5" />
 						</button>
 					)}
@@ -90,13 +94,13 @@ export default function DebugPage() {
 							{/* Debug Panel Header */}
 							<div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 flex-shrink-0">
 								<BugIcon className="size-3.5 text-amber-500" />
-								<h1 className="text-xs font-semibold">Debug Tool Call</h1>
+								<h1 className="text-xs font-semibold">{t("debug.toolCall")}</h1>
 								<button
 									type="button"
 									onClick={() => setPanelOpen(false)}
 									className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
 								>
-									收起
+									{t("common.collapse")}
 									<PanelRightCloseIcon className="size-3.5" />
 								</button>
 							</div>

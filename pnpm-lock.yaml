@@ -47,6 +47,9 @@ importers:
       '@grapecity-software/spread-sheets-designer-resources-cn':
         specifier: ^19.0.1
         version: 19.0.1
+      '@grapecity-software/spread-sheets-designer-resources-en':
+        specifier: 19.0.1
+        version: 19.0.1
       '@grapecity-software/spread-sheets-formula-panel':
         specifier: ^19.0.1
         version: 19.0.1
@@ -697,6 +700,9 @@ packages:
 
   '@grapecity-software/spread-sheets-designer-resources-cn@19.0.1':
     resolution: {integrity: sha512-MQHyaPeADiKipIZCtyxShWqHyBJnc2u1kLXXgvKP2fSw3+2m0M4CQsGHLmGp2RkFnfXY6MS71O6/zswdgF/tHg==}
+
+  '@grapecity-software/spread-sheets-designer-resources-en@19.0.1':
+    resolution: {integrity: sha512-A/Axk15y4Yjr/2/nGA0hKzMBryfYG2gv3Bhz3FIgD/BX/lDzSaD21ubHlkKLBtr3yMCL1H5V3zt36nZCrY/m/Q==}
 
   '@grapecity-software/spread-sheets-designer@19.0.1':
     resolution: {integrity: sha512-UwuOcxHEuI1+RkGrWt2KZRlmClr2RH/HJBnqIC6swGfZVVedRpt3aBtAHrYUdAfhuxlY1pC4Ru3Hpg05iEjCCw==}
@@ -6169,6 +6175,8 @@ snapshots:
   '@grapecity-software/spread-sheets-designer-react@19.0.1': {}
 
   '@grapecity-software/spread-sheets-designer-resources-cn@19.0.1': {}
+
+  '@grapecity-software/spread-sheets-designer-resources-en@19.0.1': {}
 
   '@grapecity-software/spread-sheets-designer@19.0.1': {}
 

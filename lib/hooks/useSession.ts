@@ -9,6 +9,7 @@ import {
 	getSession,
 } from "@/lib/agent/session-store";
 import { taskStore } from "@/lib/agent/task-store";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 
 // ============================================================================
 // useSession — 管理当前会话状态，自动持久化到 IndexedDB
@@ -29,10 +30,22 @@ function clearActiveSessionId() {
 	localStorage.removeItem(ACTIVE_SESSION_KEY);
 }
 
-function createNewSession(): Session {
+function getNewSessionTitle(locale: AppLocale): string {
+	const resolved = normalizeLocale(locale);
+	if (resolved === "zh-CN") return "新会话";
+	return "New Chat";
+}
+
+function getBranchSuffix(locale: AppLocale): string {
+	const resolved = normalizeLocale(locale);
+	if (resolved === "zh-CN") return "（分支）";
+	return " (Branch)";
+}
+
+function createNewSession(locale: AppLocale): Session {
 	return {
 		id: generateSessionId(),
-		title: "新会话",
+		title: getNewSessionTitle(locale),
 		messages: [],
 		snapshotMap: {},
 		createdAt: Date.now(),
@@ -40,18 +53,19 @@ function createNewSession(): Session {
 	};
 }
 
-async function generateTitle(firstMessage: string): Promise<string> {
+async function generateTitle(firstMessage: string, locale: AppLocale): Promise<string> {
+	const fallback = getNewSessionTitle(locale);
 	try {
 		const res = await fetch("/api/title", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ firstMessage }),
+			body: JSON.stringify({ firstMessage, locale }),
 		});
-		if (!res.ok) return "新会话";
+		if (!res.ok) return fallback;
 		const { title } = await res.json();
-		return title || "新会话";
+		return title || fallback;
 	} catch {
-		return "新会话";
+		return fallback;
 	}
 }
 
@@ -77,10 +91,15 @@ interface UseSessionReturn {
 	saveTokenUsage: (usage: { promptTokens: number; contextWindow: number }) => void;
 }
 
-export function useSession(): UseSessionReturn {
-	const [session, setSession] = useState<Session>(createNewSession);
+export function useSession(locale: AppLocale = "en"): UseSessionReturn {
+	const localeRef = useRef<AppLocale>(locale);
+	const [session, setSession] = useState<Session>(() => createNewSession(locale));
 	const titleCallbacksRef = useRef<Set<(title: string) => void>>(new Set());
 	const titleGeneratedRef = useRef(false);
+
+	useEffect(() => {
+		localeRef.current = locale;
+	}, [locale]);
 
 	// ref 持有最新 messages，防抖定时器读取时始终拿到最新值
 	const latestMessagesRef = useRef<AppUIMessage[]>([]);
@@ -133,7 +152,7 @@ export function useSession(): UseSessionReturn {
 						titleGeneratedRef.current = true;
 						// 捕获发起请求时的会话 ID，防止 API 返回时写入错误的会话
 						const targetSessionId = sessionRef.current.id;
-						generateTitle(text).then((title) => {
+						generateTitle(text, localeRef.current).then((title) => {
 							if (sessionRef.current.id !== targetSessionId) {
 								// 会话已切换：将标题写入原始会话的 DB，不更新当前会话状态
 								getSession(targetSessionId).then((original) => {
@@ -233,7 +252,7 @@ export function useSession(): UseSessionReturn {
 		}
 
 		taskStore.reset();
-		const s = createNewSession();
+		const s = createNewSession(localeRef.current);
 		titleGeneratedRef.current = false;
 		latestMessagesRef.current = [];
 		setSession(s);
@@ -298,7 +317,7 @@ export function useSession(): UseSessionReturn {
 
 		const forked: Session = {
 			id: generateSessionId(),
-			title: `${sessionRef.current.title}（分支）`,
+			title: `${sessionRef.current.title}${getBranchSuffix(localeRef.current)}`,
 			messages: forkedMessages,
 			snapshotMap: forkedSnapshotMap,
 			createdAt: Date.now(),

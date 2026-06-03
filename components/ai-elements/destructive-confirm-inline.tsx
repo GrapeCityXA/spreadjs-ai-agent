@@ -1,22 +1,10 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { AlertTriangleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ConfirmDialogState, ConfirmChoice } from "@/lib/hooks/useDestructiveGuard";
-
-/** 每个工具对应的操作确认文案 */
-const TOOL_LABELS: Record<string, { once: string; sameType: string }> = {
-	write_data:       { once: "确认覆盖",   sameType: "确认覆盖且后续写入数据不再确认"   },
-	set_cell:         { once: "确认写入",   sameType: "确认写入且后续写入单元格不再确认"  },
-	auto_fill:        { once: "确认填充",   sameType: "确认填充且后续自动填充不再确认"    },
-	clear_cells:      { once: "确认清除",   sameType: "确认清除且后续清除单元格不再确认"  },
-	delete_rows_cols: { once: "确认删除",   sameType: "确认删除且后续删除行列不再确认"    },
-	find_and_replace: { once: "确认替换",   sameType: "确认替换且后续查找替换不再确认"    },
-	merge_cells:      { once: "确认合并",   sameType: "确认合并且后续合并单元格不再确认"  },
-};
-
-const FALLBACK_LABELS = { once: "确认操作", sameType: "确认操作且后续此操作不再确认" };
+import { useTranslation } from "@/lib/i18n/react";
 
 interface DestructiveConfirmInlineProps {
 	dialog: ConfirmDialogState | null;
@@ -27,60 +15,69 @@ export const DestructiveConfirmInline = memo(function DestructiveConfirmInline({
 	dialog,
 	onChoice,
 }: DestructiveConfirmInlineProps) {
+	const { t } = useTranslation();
+	const labels = useMemo(
+		() => ({
+			write_data: { once: t("destructive.overwrite"), sameType: t("destructive.overwriteSkip") },
+			set_cell: { once: t("destructive.write"), sameType: t("destructive.writeSkip") },
+			auto_fill: { once: t("destructive.fill"), sameType: t("destructive.fillSkip") },
+			clear_cells: { once: t("destructive.clear"), sameType: t("destructive.clearSkip") },
+			delete_rows_cols: { once: t("destructive.delete"), sameType: t("destructive.deleteSkip") },
+			find_and_replace: { once: t("destructive.replace"), sameType: t("destructive.replaceSkip") },
+			merge_cells: { once: t("destructive.merge"), sameType: t("destructive.mergeSkip") },
+			fallback: { once: t("destructive.confirm"), sameType: t("destructive.confirmSameType") },
+		}),
+		[t],
+	);
+
 	if (!dialog) return null;
 
-	const labels = TOOL_LABELS[dialog.toolName] ?? FALLBACK_LABELS;
+	const current = labels[dialog.toolName as keyof typeof labels] ?? labels.fallback;
 
 	return (
-		<div className="mx-1 mb-2 rounded-lg border border-amber-200/70 bg-amber-50/80 dark:border-amber-500/20 dark:bg-amber-950/20 px-3 py-2.5">
-			<div className="flex items-start gap-2 mb-2">
-				<AlertTriangleIcon className="size-3.5 shrink-0 text-amber-500 mt-0.5" />
-				<div className="flex-1 min-w-0">
-					<p className="text-xs font-medium text-amber-900 dark:text-amber-200 leading-tight">
+		<div className="mx-1 mb-2 rounded-lg border border-amber-200/70 bg-amber-50/80 px-3 py-2.5 dark:border-amber-500/20 dark:bg-amber-950/20">
+			<div className="mb-2 flex items-start gap-2">
+				<AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+				<div className="min-w-0 flex-1">
+					<p className="text-xs font-medium leading-tight text-amber-900 dark:text-amber-200">
 						{dialog.title}
 					</p>
-					<p className="text-xs text-amber-700/80 dark:text-amber-300/70 mt-0.5 leading-relaxed">
+					<p className="mt-0.5 text-xs leading-relaxed text-amber-700/80 dark:text-amber-300/70">
 						{dialog.description}
 					</p>
 				</div>
 			</div>
 			<div className="flex flex-col gap-1.5 pl-5">
 				<div className="flex gap-1.5">
-					<Button
-						size="sm"
-						variant="default"
-						className="h-6 text-xs px-2.5"
-						onClick={() => onChoice("once")}
-					>
-						{labels.once}
+					<Button size="sm" variant="default" className="h-6 px-2.5 text-xs" onClick={() => onChoice("once")}>
+						{current.once}
 					</Button>
 					<Button
 						size="sm"
 						variant="ghost"
-						className="h-6 text-xs px-2.5 text-muted-foreground"
+						className="h-6 px-2.5 text-xs text-muted-foreground"
 						onClick={() => onChoice("cancel")}
 					>
-						取消
+						{t("destructive.cancel")}
 					</Button>
 				</div>
 				<Button
 					size="sm"
 					variant="outline"
-					className="h-6 text-xs px-2.5 self-start"
+					className="h-6 self-start px-2.5 text-xs"
 					onClick={() => onChoice("same-type")}
 				>
-					{labels.sameType}
+					{current.sameType}
 				</Button>
 				<Button
 					size="sm"
 					variant="outline"
-					className="h-6 text-xs px-2.5 self-start"
+					className="h-6 self-start px-2.5 text-xs"
 					onClick={() => onChoice("all")}
 				>
-					确认操作且后续所有操作不再确认
+					{t("destructive.confirmAll")}
 				</Button>
 			</div>
 		</div>
 	);
 });
-

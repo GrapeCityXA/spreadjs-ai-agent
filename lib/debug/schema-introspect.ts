@@ -33,12 +33,16 @@ export function introspectSchema(schema: z.ZodType): FieldMeta[] {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractField(name: string, schema: any): FieldMeta {
 	const info = unwrap(schema);
+	const description =
+		typeof info.description === "string" && /[\u4e00-\u9fff]/.test(info.description)
+			? undefined
+			: info.description;
 
 	const base: FieldMeta = {
 		name,
 		type: "unknown",
 		required: info.required,
-		description: info.description,
+		description,
 		defaultValue: info.defaultValue,
 	};
 

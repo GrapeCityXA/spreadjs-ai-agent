@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback } from "react";
 import type { FileUIPart } from "ai";
+import { createTranslator, normalizeLocale, type AppLocale } from "@/lib/i18n";
 
 export interface PendingFile {
 	name: string;
@@ -87,7 +88,7 @@ export function useAttachments(options?: { visionAvailable?: boolean }) {
 	const stageFile = useCallback(async (file: File) => {
 		if (isImageFile(file)) {
 			if (!visionAvailable) {
-				console.warn("[useAttachments] Vision 模型不可用，已忽略图片:", file.name);
+				console.warn("[useAttachments] Vision input is unavailable. Ignoring image:", file.name);
 				return;
 			}
 			const dataUrl = await fileToDataUrl(file);
@@ -159,13 +160,14 @@ export function useAttachments(options?: { visionAvailable?: boolean }) {
 
 	/**
 	 * 消费暂存电子表格文件（发送消息时调用）。
-	 * 返回附件提示文本（如 `[附件: foo.xlsx]`），若无电子表格文件则返回 null。
+	 * 返回附件提示文本（如 `[Attachment: foo.xlsx]`），若无电子表格文件则返回 null。
 	 * 调用后清除电子表格类 pendingFiles（base64 保留在 ref 中供 import_file 工具读取）。
 	 */
-	const consumePendingFile = useCallback((): string | null => {
+	const consumePendingFile = useCallback((locale: AppLocale = "en"): string | null => {
 		const spreadsheets = pendingFiles.filter(f => f.fileType === "spreadsheet");
 		if (spreadsheets.length === 0) return null;
-		const tags = spreadsheets.map(f => `[附件: ${f.name}]`).join("\n");
+		const t = createTranslator(normalizeLocale(locale));
+		const tags = spreadsheets.map(f => t("chat.marker.attachment", { name: f.name })).join("\n");
 		setPendingFiles(prev => prev.filter(f => f.fileType !== "spreadsheet"));
 		return tags;
 	}, [pendingFiles]);

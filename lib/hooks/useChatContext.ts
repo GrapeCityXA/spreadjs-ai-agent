@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { SpreadWorkbook } from "@/lib/agent/types";
 import { taskStore } from "@/lib/agent/task-store";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 
 /**
  * 工作簿上下文 + 任务上下文 + 变更上下文组装。
@@ -17,12 +18,18 @@ import { taskStore } from "@/lib/agent/task-store";
 export function useChatContext(
 	workbook: SpreadWorkbook | null,
 	dirtyConsumer?: () => string | undefined,
+	locale: AppLocale = "en",
+	metadataProvider?: () => Record<string, unknown>,
 ) {
 	const bridgeRef = useRef<typeof import("@/lib/spreadjs/bridge") | null>(null);
 	const workbookRef = useRef(workbook);
 	workbookRef.current = workbook;
 	const dirtyConsumerRef = useRef(dirtyConsumer);
 	dirtyConsumerRef.current = dirtyConsumer;
+	const localeRef = useRef<AppLocale>(normalizeLocale(locale));
+	localeRef.current = normalizeLocale(locale);
+	const metadataProviderRef = useRef(metadataProvider);
+	metadataProviderRef.current = metadataProvider;
 
 	useEffect(() => {
 		import("@/lib/spreadjs/bridge").then((m) => { bridgeRef.current = m; });
@@ -31,10 +38,12 @@ export function useChatContext(
 	/** 构建 transport body 附加数据（每次 HTTP 请求时调用） */
 	const buildBody = useCallback(() => ({
 		workbookContext: workbookRef.current && bridgeRef.current
-			? bridgeRef.current.captureWorkbookContext(workbookRef.current)
+			? bridgeRef.current.captureWorkbookContext(workbookRef.current, localeRef.current)
 			: undefined,
-		taskContext: taskStore.serialize() ?? undefined,
+		taskContext: taskStore.serialize(localeRef.current) ?? undefined,
 		dirtyContext: dirtyConsumerRef.current?.() ?? undefined,
+		locale: localeRef.current,
+		...metadataProviderRef.current?.(),
 	}), []);
 
 	return { buildBody };

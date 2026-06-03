@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 
 const STORAGE_KEY = "spreadjs-agent-settings";
 
@@ -9,6 +10,7 @@ export type ThemeMode = "light" | "dark" | "system";
 export interface AppSettings {
 	maxAutoSteps: number;
 	theme: ThemeMode;
+	locale: AppLocale;
 	showContextUsage: boolean;
 	autoSave: boolean;
 	autoRestoreSession: boolean;
@@ -19,6 +21,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
 	maxAutoSteps: 25,
 	theme: "system",
+	locale: "zh-CN",
 	showContextUsage: true,
 	autoSave: false,
 	autoRestoreSession: false,
@@ -31,7 +34,11 @@ function loadSettings(): AppSettings {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (!raw) return DEFAULT_SETTINGS;
 		const parsed = JSON.parse(raw) as Partial<AppSettings>;
-		return { ...DEFAULT_SETTINGS, ...parsed };
+		return {
+			...DEFAULT_SETTINGS,
+			...parsed,
+			locale: normalizeLocale(parsed.locale),
+		};
 	} catch {
 		return DEFAULT_SETTINGS;
 	}
@@ -92,6 +99,7 @@ export function useSettings() {
 
 	const updateSettings = useCallback((patch: Partial<AppSettings>) => {
 		const next = { ...loadSettings(), ...patch };
+		next.locale = normalizeLocale(next.locale);
 		saveSettings(next);
 		emitStoreChange();
 	}, []);

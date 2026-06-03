@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import type { SpreadWorkbook } from "@/lib/agent/types";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 import { colIndexToLetter } from "@/lib/spreadjs/utils";
 import {
 	asInteractiveWorksheet,
@@ -32,29 +33,60 @@ interface RenameRecord {
 // ─── 序列化 ─────────────────────────────────────────────
 
 /** 将单元格集合压缩为摘要：数量少时逐个列出，数量多时只给范围 */
-function summarizeCells(cells: Set<string>): string {
+function summarizeCells(cells: Set<string>, locale: AppLocale): string {
 	if (cells.size === 0) return "";
 	const arr = [...cells];
 	if (arr.length <= 8) return arr.join(", ");
-	return `${arr.slice(0, 5).join(", ")} 等共 ${arr.length} 个单元格`;
+	const resolved = normalizeLocale(locale);
+	if (resolved === "zh-CN") {
+		return `${arr.slice(0, 5).join(", ")} 等共 ${arr.length} 个单元格`;
+	}
+	return `${arr.slice(0, 5).join(", ")} and ${arr.length - 5} more cells`;
 }
 
 function serializeDirty(
 	sheets: Map<string, SheetDirty>,
 	renames: RenameRecord[],
+	locale: AppLocale,
 ): string | undefined {
+	const resolved = normalizeLocale(locale);
+	const isZh = resolved === "zh-CN";
 	const parts: string[] = [];
 
 	for (const [name, info] of sheets) {
 		const segs: string[] = [];
-		if (info.cells.size > 0) segs.push(`修改单元格: ${summarizeCells(info.cells)}`);
-		if (info.rows.size > 0) segs.push(`行变化: 第 ${[...info.rows].sort((a, b) => a - b).map(r => r + 1).join(", ")} 行`);
-		if (info.cols.size > 0) segs.push(`列变化: 第 ${[...info.cols].sort((a, b) => a - b).map(c => colIndexToLetter(c)).join(", ")} 列`);
+		if (info.cells.size > 0) {
+			segs.push(
+				isZh
+					? `修改单元格: ${summarizeCells(info.cells, locale)}`
+					: `Changed cells: ${summarizeCells(info.cells, locale)}`,
+			);
+		}
+		if (info.rows.size > 0) {
+			const rows = [...info.rows].sort((a, b) => a - b).map((r) => r + 1).join(", ");
+			segs.push(
+				isZh
+					? `行变化: 第 ${rows} 行`
+					: `Changed rows: ${rows}`,
+			);
+		}
+		if (info.cols.size > 0) {
+			const cols = [...info.cols].sort((a, b) => a - b).map((c) => colIndexToLetter(c)).join(", ");
+			segs.push(
+				isZh
+					? `列变化: 第 ${cols} 列`
+					: `Changed columns: ${cols}`,
+			);
+		}
 		if (segs.length > 0) parts.push(`- [${name}] ${segs.join("; ")}`);
 	}
 
 	for (const r of renames) {
-		parts.push(`- 工作表重命名: "${r.oldName}" → "${r.newName}"`);
+		parts.push(
+			isZh
+				? `- 工作表重命名: "${r.oldName}" → "${r.newName}"`
+				: `- Worksheet renamed: "${r.oldName}" -> "${r.newName}"`,
+		);
 	}
 
 	return parts.length > 0 ? parts.join("\n") : undefined;
@@ -76,9 +108,15 @@ export interface UseDirtyTrackerResult {
  */
 export function useDirtyTracker(
 	workbook: SpreadWorkbook | null,
+	locale: AppLocale = "en",
 ): UseDirtyTrackerResult {
 	const sheetsRef = useRef(new Map<string, SheetDirty>());
 	const renamesRef = useRef<RenameRecord[]>([]);
+	const localeRef = useRef<AppLocale>(locale);
+
+	useEffect(() => {
+		localeRef.current = locale;
+	}, [locale]);
 
 	// ── 记录辅助 ──────────────────────────────────────
 
@@ -181,7 +219,7 @@ export function useDirtyTracker(
 	// ── consume ──────────────────────────────────────
 
 	const consume = useCallback((): string | undefined => {
-		const result = serializeDirty(sheetsRef.current, renamesRef.current);
+		const result = serializeDirty(sheetsRef.current, renamesRef.current, localeRef.current);
 		sheetsRef.current = new Map();
 		renamesRef.current = [];
 		return result;

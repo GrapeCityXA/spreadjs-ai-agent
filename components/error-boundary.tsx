@@ -2,9 +2,11 @@
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react";
+import { DEFAULT_LOCALE, translate, type AppLocale } from "@/lib/i18n";
 
 interface Props {
 	label: string;
+	locale?: AppLocale;
 	children: ReactNode;
 }
 
@@ -29,7 +31,11 @@ export class ErrorBoundary extends Component<Props, State> {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-6 text-center">
 				<AlertTriangleIcon className="size-8 text-destructive/70" />
-				<h3 className="text-sm font-semibold">{this.props.label} 出错了</h3>
+				<h3 className="text-sm font-semibold">
+					{translate(this.props.locale ?? DEFAULT_LOCALE, "errorBoundary.failed", {
+						label: this.props.label,
+					})}
+				</h3>
 				<p className="max-w-xs text-xs text-muted-foreground">
 					{this.state.error.message}
 				</p>
@@ -39,7 +45,7 @@ export class ErrorBoundary extends Component<Props, State> {
 					onClick={() => this.setState({ error: null })}
 				>
 					<RefreshCwIcon className="size-3" />
-					重试
+					{translate(this.props.locale ?? DEFAULT_LOCALE, "common.retry")}
 				</button>
 			</div>
 		);

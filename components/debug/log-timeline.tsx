@@ -2,14 +2,7 @@
 
 import type { DebugLogEntry, DebugSession } from "@/lib/debug/types";
 import { useState } from "react";
-
-const STAGE_LABELS: Record<string, string> = {
-	schema_validation: "Schema 校验",
-	handler_resolution: "Handler 解析",
-	env_check: "环境检查",
-	execution: "执行",
-	result_format: "结果序列化",
-};
+import { useTranslation } from "@/lib/i18n/react";
 
 const STATUS_ICON: Record<string, string> = {
 	ok: "✅",
@@ -31,26 +24,35 @@ interface LogTimelineProps {
 }
 
 export function LogTimeline({ session }: LogTimelineProps) {
+	const { t } = useTranslation();
+	const stageLabels: Record<string, string> = {
+		schema_validation: t("debug.stage.schemaValidation"),
+		handler_resolution: t("debug.stage.handlerResolution"),
+		env_check: t("debug.stage.envCheck"),
+		execution: t("debug.stage.execution"),
+		result_format: t("debug.stage.resultFormat"),
+	};
+
 	if (!session) {
 		return (
 			<div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-				点击 Execute 查看执行日志
+				{t("debug.clickExecute")}
 			</div>
 		);
 	}
 
 	return (
 		<div className="space-y-1">
-			<h3 className="text-xs font-medium text-muted-foreground mb-2">Execution Log</h3>
+			<h3 className="text-xs font-medium text-muted-foreground mb-2">{t("debug.executionLog")}</h3>
 			{session.logs.map((log, i) => (
-				<LogEntry key={i} log={log} />
+				<LogEntry key={i} log={log} stageLabels={stageLabels} />
 			))}
 			<div className="mt-3 border-t border-border/60 pt-2 text-xs text-muted-foreground text-center">
-				Total: {session.totalMs}ms
+				{t("debug.total")}: {session.totalMs}ms
 			</div>
 			{session.result !== undefined && (
 				<div className="mt-3 space-y-1">
-					<h3 className="text-xs font-medium text-muted-foreground">Result</h3>
+					<h3 className="text-xs font-medium text-muted-foreground">{t("debug.result")}</h3>
 					<pre className="max-h-[300px] overflow-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
 						{formatJson(session.result)}
 					</pre>
@@ -60,9 +62,15 @@ export function LogTimeline({ session }: LogTimelineProps) {
 	);
 }
 
-function LogEntry({ log }: { log: DebugLogEntry }) {
+function LogEntry({
+	log,
+	stageLabels,
+}: {
+	log: DebugLogEntry;
+	stageLabels: Record<string, string>;
+}) {
 	const [expanded, setExpanded] = useState(false);
-	const label = STAGE_LABELS[log.stage] ?? log.stage;
+	const label = stageLabels[log.stage] ?? log.stage;
 	const icon = STATUS_ICON[log.status] ?? "❓";
 	const hasDetail = log.output || log.error || log.detail;
 

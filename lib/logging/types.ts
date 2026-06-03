@@ -1,10 +1,12 @@
 /** 错误日志条目的严重级别 */
-export type ErrorLevel = "error" | "warn";
+export type ErrorLevel = "error" | "warn" | "info";
 
 /** 错误来源分类 */
 export type ErrorSource =
 	| "chat/route"
 	| "chat/route/retry"
+	| "chat/step"
+	| "chat/finish"
 	| "chat/stream"
 	| "debug/tool-call"
 	| "title/route"

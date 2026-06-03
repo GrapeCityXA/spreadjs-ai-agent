@@ -21,6 +21,7 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
  */
 export class McpOAuthProvider implements OAuthClientProvider {
 	constructor(
+		private clientId: string,
 		private serverName: string,
 		private config: McpServerConfig,
 	) {}
@@ -44,7 +45,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
 	async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
 		// 优先使用动态注册后保存的 clientInfo
-		const saved = oauthStore.getClientInfo(this.serverName);
+		const saved = oauthStore.getClientInfo(this.clientId, this.serverName);
 		if (saved) return saved;
 		if (!this.config.clientId) return undefined;
 		return {
@@ -54,15 +55,15 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	}
 
 	async saveClientInformation(info: OAuthClientInformationMixed): Promise<void> {
-		oauthStore.setClientInfo(this.serverName, info);
+		oauthStore.setClientInfo(this.clientId, this.serverName, info);
 	}
 
 	async tokens(): Promise<OAuthTokens | undefined> {
-		return oauthStore.getTokens(this.serverName);
+		return oauthStore.getTokens(this.clientId, this.serverName);
 	}
 
 	async saveTokens(tokens: OAuthTokens): Promise<void> {
-		oauthStore.setTokens(this.serverName, tokens);
+		oauthStore.setTokens(this.clientId, this.serverName, tokens);
 	}
 
 	async redirectToAuthorization(url: URL): Promise<void> {
@@ -72,16 +73,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	}
 
 	async saveCodeVerifier(v: string): Promise<void> {
-		oauthStore.setVerifier(this.serverName, v);
+		oauthStore.setVerifier(this.clientId, this.serverName, v);
 	}
 
 	async codeVerifier(): Promise<string> {
-		return oauthStore.getVerifier(this.serverName) ?? "";
+		return oauthStore.getVerifier(this.clientId, this.serverName) ?? "";
 	}
 
 	async state(): Promise<string> {
 		const s = crypto.randomUUID();
-		oauthStore.setState(s, this.serverName);
+		oauthStore.setState(s, this.clientId, this.serverName);
 		return s;
 	}
 }

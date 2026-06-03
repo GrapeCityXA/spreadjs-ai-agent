@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createTranslator } from "@/lib/i18n";
+import { resolveRequestLocale } from "@/lib/i18n/request";
 import { errorLogger } from "@/lib/logging";
 import type { ErrorLogEntry } from "@/lib/logging/types";
 
@@ -14,12 +16,14 @@ const MAX_ENTRIES = 200;
  * 按时间降序返回最近 200 条。文件不存在或读取失败时返回空数组。
  */
 export async function GET(req: Request) {
+	const locale = resolveRequestLocale(req);
+	const t = createTranslator(locale);
 	const { searchParams } = new URL(req.url);
 	const date = searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
 
 	// 校验日期格式，防止路径遍历
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-		return Response.json({ error: "Invalid date format" }, { status: 400 });
+		return Response.json({ error: t("diagnostic.invalidDateFormat") }, { status: 400 });
 	}
 
 	// flush 缓冲区，确保最新日志已写入文件

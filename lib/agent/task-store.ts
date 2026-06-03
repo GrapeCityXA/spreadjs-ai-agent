@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { Task, TaskPlan } from "@/lib/agent/task-types";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 
 // ============================================================================
 // Agent 任务列表状态管理 — 多计划 + 会话级持久化
@@ -85,9 +86,11 @@ class TaskStore {
 	 * 序列化为文本，注入 system prompt 让 AI 感知当前进度。
 	 * 优先展示最新计划；已完成的历史计划仅显示摘要。
 	 */
-	serialize(): string | null {
+	serialize(locale: AppLocale = "en"): string | null {
 		if (this.plans.length === 0) return null;
 		const statusIcon = { pending: "⬚", running: "▸", done: "✓" };
+		const resolved = normalizeLocale(locale);
+		const isZh = resolved === "zh-CN";
 		const parts: string[] = [];
 
 		// 历史计划（已全部完成的）以摘要形式展示
@@ -95,14 +98,18 @@ class TaskStore {
 			const plan = this.plans[i];
 			const doneCount = plan.tasks.filter((t) => t.status === "done").length;
 			const total = plan.tasks.length;
-			const label = plan.tasks.map((t) => t.label).join("、");
-			parts.push(`历史计划 ${i + 1}（${doneCount}/${total} 完成）: ${label}`);
+			const label = plan.tasks.map((t) => t.label).join(isZh ? "、" : ", ");
+			parts.push(
+				isZh
+					? `历史计划 ${i + 1}（${doneCount}/${total} 完成）: ${label}`
+					: `Previous plan ${i + 1} (${doneCount}/${total} complete): ${label}`,
+			);
 		}
 
 		// 最新计划完整展示
 		const latest = this.latestPlan()!;
 		if (parts.length > 0) parts.push(""); // 空行分隔
-		parts.push("当前计划:");
+		parts.push(isZh ? "当前计划:" : "Current plan:");
 		for (const t of latest.tasks) {
 			parts.push(`- [${statusIcon[t.status]}] ${t.id}: ${t.label}`);
 		}

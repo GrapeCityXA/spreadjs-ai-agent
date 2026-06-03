@@ -1,29 +1,36 @@
 import { getToolDef, isServerTool } from "@/lib/tools/registry";
 import type { ToolDef } from "@/lib/tools/types";
+import { createTranslator } from "@/lib/i18n";
+import { resolveRequestLocale } from "@/lib/i18n/request";
 import { errorLogger } from "@/lib/logging";
 
 export async function POST(req: Request) {
+	const fallbackLocale = resolveRequestLocale(req);
+	const fallbackT = createTranslator(fallbackLocale);
 	if (process.env.NODE_ENV === "production") {
 		return Response.json(
-			{ error: "Debug endpoint disabled in production" },
+			{ error: fallbackT("debug.endpointDisabled") },
 			{ status: 403 },
 		);
 	}
 
 	try {
-		const { toolName, input } = await req.json();
+		const body = await req.json() as { toolName: string; input: unknown; locale?: string };
+		const locale = resolveRequestLocale(req, body.locale);
+		const t = createTranslator(locale);
+		const { toolName, input } = body;
 
 		if (!isServerTool(toolName)) {
 			return Response.json(
-				{ error: `"${toolName}" 不是服务端工具，请在客户端执行` },
+				{ error: t("debug.serverToolRequired", { toolName }) },
 				{ status: 400 },
 			);
 		}
 
-		const def = getToolDef(toolName) as ToolDef | undefined;
+		const def = getToolDef(toolName, locale) as ToolDef | undefined;
 		if (!def?.execute) {
 			return Response.json(
-				{ error: `工具 "${toolName}" 无 execute 函数` },
+				{ error: t("debug.executeMissing", { toolName }) },
 				{ status: 404 },
 			);
 		}

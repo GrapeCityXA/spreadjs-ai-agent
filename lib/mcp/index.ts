@@ -9,4 +9,5 @@ export type {
 	TransportType,
 } from "./types";
 export { McpConfigSchema } from "./types";
-export { mcpManager } from "./manager";
+export { McpManager } from "./manager";
+export { getMcpManagerForRequest, mcpRegistry, resolveMcpClientId } from "./registry";

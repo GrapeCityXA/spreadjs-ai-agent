@@ -4,6 +4,7 @@ import { useCallback, useMemo } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/lib/i18n/react";
 
 interface JsonEditorProps {
 	value: string;
@@ -30,6 +31,7 @@ export function JsonEditor({
 	error,
 	className,
 }: JsonEditorProps) {
+	const { t } = useTranslation();
 	const handleFormat = useCallback(() => {
 		const formatted = tryFormatJson(value);
 		if (formatted && formatted !== value) onChange(formatted);
@@ -73,7 +75,7 @@ export function JsonEditor({
 					type="button"
 					onClick={handleFormat}
 					disabled={!isValidJson}
-					title="格式化 JSON (Ctrl+Shift+F)"
+					title={t("jsonEditor.formatTitle")}
 					className={cn(
 						"absolute top-2 right-2 px-1.5 py-0.5 rounded text-[10px] font-medium",
 						"opacity-0 group-hover:opacity-100 transition-opacity",
@@ -82,7 +84,7 @@ export function JsonEditor({
 							: "bg-muted/40 text-muted-foreground/40 cursor-not-allowed",
 					)}
 				>
-					Format
+					{t("common.format")}
 				</button>
 			</div>
 			{error && (

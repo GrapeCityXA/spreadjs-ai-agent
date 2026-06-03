@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { ChatOnToolCallCallback } from "ai";
+import { normalizeLocale, type AppLocale } from "@/lib/i18n";
 import type { SpreadWorkbook, ResolvedRange } from "@/lib/agent/types";
 import type { AppUIMessage } from "@/lib/agent/ui-message";
 import { getHandler, isServerTool } from "@/lib/tools/registry";
@@ -11,27 +12,30 @@ import { resolveAddress, parseRangeAddress } from "@/lib/spreadjs/utils";
 import { loadBridge } from "@/lib/tools/types";
 import type { ConfirmRequest } from "@/lib/hooks/useDestructiveGuard";
 
-/** Agent 自管理工具名称集合（handler 不依赖 workbook） */
 const AGENT_TOOLS = new Set(["add_tasks", "complete_task", "ask_user"]);
-
-/** 工具执行超时（ms），防止 handler hang 导致 agent 循环永久卡死 */
 const TOOL_TIMEOUT_MS = 60_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, toolName: string): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(
-			() => reject(new Error(`工具 ${toolName} 执行超时 (${ms / 1000}s)`)),
+			() => reject(new Error(`Tool ${toolName} timed out after ${ms / 1000}s`)),
 			ms,
 		);
 		promise.then(
-			(v) => { clearTimeout(timer); resolve(v); },
-			(e) => { clearTimeout(timer); reject(e); },
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
 		);
 	});
 }
 
-/** addToolOutput 函数签名（AI SDK 6 discriminated union） */
 type AddToolOutputFn = UseChatHelpers<AppUIMessage>["addToolOutput"];
+
 type ScreenshotToolData = {
 	imageBase64?: string;
 	sheetName?: string;
@@ -39,30 +43,38 @@ type ScreenshotToolData = {
 	height?: number;
 };
 
-/**
- * 对破坏性工具执行前进行数据检测，若发现已有数据则弹出确认弹窗等待用户决策。
- * 返回 true 表示可以继续执行，false 表示用户已取消。
- */
+function localize(locale: AppLocale, en: string, zh: string): string {
+	const resolved = normalizeLocale(locale);
+	if (resolved === "zh-CN") return zh;
+	return en;
+}
+
 async function checkDestructiveOp(
-	wb: SpreadWorkbook,
+	workbook: SpreadWorkbook,
 	name: string,
 	input: Record<string, unknown>,
-	requestConfirm: (p: ConfirmRequest) => Promise<boolean>,
+	requestConfirm: (params: ConfirmRequest) => Promise<boolean>,
+	locale: AppLocale,
 ): Promise<boolean> {
 	const bridge = await loadBridge();
+	bridge.setBridgeLocale(locale);
+	const resolved = normalizeLocale(locale);
+	const zh = resolved === "zh-CN";
 
 	switch (name) {
 		case "write_data": {
 			const data = input.data as Array<unknown[] | null>;
 			const range = resolveAddress(input.address as string);
 			range.rowCount = data.length;
-			range.colCount = Math.max(...data.map((r) => (r ? r.length : 0)), 1);
-			const check = bridge.checkSparseDataConflict(wb, range, data);
+			range.colCount = Math.max(...data.map((row) => (row ? row.length : 0)), 1);
+			const check = bridge.checkSparseDataConflict(workbook, range, data);
 			if (!check.hasData) return true;
 			return requestConfirm({
 				toolName: name,
-				title: "写入区域已有数据",
-				description: `写入起始地址 ${input.address} 的目标区域中有 ${check.nonEmptyCount} 个单元格包含已有内容，继续操作将覆盖这些数据。`,
+				title: localize(locale, "Target range already contains data", "目标区域已包含数据"),
+				description: zh
+					? `目标区域 ${input.address} 中已有 ${check.nonEmptyCount} 个单元格包含数据。继续将覆盖这些内容。`
+					: `${check.nonEmptyCount} cells in the target range starting at ${input.address} already contain data. Continuing will overwrite those cells.`,
 			});
 		}
 
@@ -75,186 +87,232 @@ async function checkDestructiveOp(
 				rowCount: 1,
 				colCount: 1,
 			};
-			const check = bridge.checkRangeHasData(wb, range);
+			const check = bridge.checkRangeHasData(workbook, range);
 			if (!check.hasData) return true;
 			return requestConfirm({
 				toolName: name,
-				title: "单元格已有内容",
-				description: `单元格 ${input.cell} 已包含数据，继续操作将覆盖该内容。`,
+				title: localize(locale, "Cell already contains data", "单元格已包含数据"),
+				description: zh
+					? `单元格 ${input.cell} 已有内容。继续将覆盖它。`
+					: `Cell ${input.cell} already has content. Continuing will overwrite it.`,
 			});
 		}
 
 		case "auto_fill": {
 			const sheetPrefix = (input.sheetName as string | undefined) ? `${input.sheetName}!` : "";
-			const src = resolveAddress(`${sheetPrefix}${input.sourceRange as string}`);
-			const dst = resolveAddress(`${sheetPrefix}${input.destRange as string}`);
-
-			// 构造稀疏掩码：只检测 destRange 中不属于 sourceRange 的单元格
+			const source = resolveAddress(`${sheetPrefix}${input.sourceRange as string}`);
+			const dest = resolveAddress(`${sheetPrefix}${input.destRange as string}`);
 			const mask: Array<unknown[] | null> = [];
-			for (let r = 0; r < dst.rowCount; r++) {
-				const row: unknown[] = [];
-				let hasNew = false;
-				for (let c = 0; c < dst.colCount; c++) {
-					const absRow = dst.row + r;
-					const absCol = dst.col + c;
+
+			for (let row = 0; row < dest.rowCount; row++) {
+				const maskRow: unknown[] = [];
+				let hasNewTarget = false;
+
+				for (let col = 0; col < dest.colCount; col++) {
+					const absRow = dest.row + row;
+					const absCol = dest.col + col;
 					const inSource =
-						absRow >= src.row && absRow < src.row + src.rowCount &&
-						absCol >= src.col && absCol < src.col + src.colCount;
-					row.push(inSource ? null : true); // null=跳过, true=检测
-					if (!inSource) hasNew = true;
+						absRow >= source.row &&
+						absRow < source.row + source.rowCount &&
+						absCol >= source.col &&
+						absCol < source.col + source.colCount;
+					maskRow.push(inSource ? null : true);
+					if (!inSource) hasNewTarget = true;
 				}
-				mask.push(hasNew ? row : null);
+
+				mask.push(hasNewTarget ? maskRow : null);
 			}
-			const check = bridge.checkSparseDataConflict(wb, dst, mask);
+
+			const check = bridge.checkSparseDataConflict(workbook, dest, mask);
 			if (!check.hasData) return true;
 			return requestConfirm({
 				toolName: name,
-				title: "填充目标区域已有数据",
-				description: `自动填充的目标区域 ${input.destRange} 中有 ${check.nonEmptyCount} 个单元格包含已有内容，继续操作将覆盖这些数据。`,
+				title: localize(locale, "Auto-fill target already contains data", "自动填充目标已包含数据"),
+				description: zh
+					? `目标区域 ${input.destRange} 中已有 ${check.nonEmptyCount} 个单元格包含数据。继续将覆盖这些内容。`
+					: `${check.nonEmptyCount} cells in the destination range ${input.destRange} already contain data. Continuing will overwrite those cells.`,
 			});
 		}
 
 		case "clear_cells": {
-			if (input.clearType === "format") return true; // 仅清格式，不破坏数据
+			if (input.clearType === "format") return true;
 			const range = resolveAddress(input.address as string);
-			const check = bridge.checkRangeHasData(wb, range);
+			const check = bridge.checkRangeHasData(workbook, range);
 			if (!check.hasData) return true;
 			return requestConfirm({
 				toolName: name,
-				title: "清除区域已有数据",
-				description: `目标区域 ${input.address} 中有 ${check.nonEmptyCount} 个单元格包含数据，继续操作将清除这些内容。`,
+				title: localize(locale, "Target range contains data", "目标区域包含数据"),
+				description: zh
+					? `${input.address} 中有 ${check.nonEmptyCount} 个单元格包含数据。继续将清除这些内容。`
+					: `${check.nonEmptyCount} cells in ${input.address} contain data. Continuing will clear that content.`,
 			});
 		}
 
 		case "delete_rows_cols": {
 			const check = bridge.checkRowsColsHaveData(
-				wb,
+				workbook,
 				input.sheetName as string | undefined,
 				input.direction as "row" | "column",
 				input.index as number,
 				(input.count as number) ?? 1,
 			);
 			if (!check.hasData) return true;
-			const dirLabel = input.direction === "row" ? "行" : "列";
 			const count = (input.count as number) ?? 1;
+			const label = input.direction === "row" ? "rows" : "columns";
+			const labelZh = input.direction === "row" ? "行" : "列";
 			return requestConfirm({
 				toolName: name,
-				title: `删除的${dirLabel}包含数据`,
-				description: `即将删除的 ${count} 个${dirLabel}中有 ${check.nonEmptyCount} 个单元格包含数据，删除后数据不可恢复。`,
+				title: zh
+					? `将删除的${labelZh}中包含数据`
+					: `Selected ${label} contain data`,
+				description: zh
+					? `即将删除的 ${count} ${labelZh}中发现了 ${check.nonEmptyCount} 个非空单元格。此操作无法撤销。`
+					: `${check.nonEmptyCount} populated cells were found in the ${count} ${label} that will be deleted. This action cannot be undone.`,
 			});
 		}
 
 		case "find_and_replace": {
-			if (!input.replace && input.replace !== "") return true; // 仅查找
+			if (!input.replace && input.replace !== "") return true;
 			return requestConfirm({
 				toolName: name,
-				title: "即将替换已有数据",
-				description: `即将把"${input.find}"替换为"${input.replace}"，此操作会修改工作簿中的匹配内容。`,
+				title: localize(locale, "Replace will modify workbook data", "替换将修改工作簿数据"),
+				description: zh
+					? `这会在匹配到的单元格中把“${input.find}”替换为“${input.replace}”。`
+					: `This will replace "${input.find}" with "${input.replace}" in matching cells across the workbook.`,
 			});
 		}
 
 		case "merge_cells": {
-			if (input.action !== "merge") return true; // 取消合并不需要确认
+			if (input.action !== "merge") return true;
 			const range = resolveAddress(input.address as string);
-			if (range.rowCount <= 1 && range.colCount <= 1) return true; // 单格无意义
-			const check = bridge.checkRangeHasData(wb, range);
-			// 合并时只保留左上角，若有多个非空单元格则提示
+			if (range.rowCount <= 1 && range.colCount <= 1) return true;
+			const check = bridge.checkRangeHasData(workbook, range);
 			if (check.nonEmptyCount <= 1) return true;
 			return requestConfirm({
 				toolName: name,
-				title: "合并区域包含多个单元格数据",
-				description: `合并区域 ${input.address} 中有 ${check.nonEmptyCount} 个单元格包含内容，合并后只保留左上角的值，其余内容将被隐藏。`,
+				title: localize(locale, "Merge range contains multiple populated cells", "合并区域中包含多个非空单元格"),
+				description: zh
+					? `${input.address} 中有 ${check.nonEmptyCount} 个单元格包含内容。合并后仅左上角的值会保留可见。`
+					: `${check.nonEmptyCount} cells in ${input.address} contain content. After merging, only the upper-left value will remain visible.`,
 			});
 		}
-
-		// ── 对象/结构删除类：始终弹确认，不需要数据检测 ──────────────────────────
 
 		case "delete_worksheet":
 			return requestConfirm({
 				toolName: name,
-				title: "删除工作表",
-				description: `即将删除工作表"${input.name}"及其全部数据，此操作不可恢复。`,
+				title: localize(locale, "Delete worksheet", "删除工作表"),
+				description: zh
+					? `这会删除工作表“${input.name}”及其全部数据。此操作无法撤销。`
+					: `This will delete worksheet "${input.name}" and all of its data. This action cannot be undone.`,
 			});
 
 		case "remove_chart":
 			return requestConfirm({
 				toolName: name,
-				title: "删除图表",
-				description: `即将删除图表"${input.chartName}"。`,
+				title: localize(locale, "Delete chart", "删除图表"),
+				description: zh
+					? `这会删除图表“${input.chartName}”。`
+					: `This will delete chart "${input.chartName}".`,
 			});
 
 		case "remove_pivot_table":
 			return requestConfirm({
 				toolName: name,
-				title: "删除透视表",
-				description: `即将删除透视表"${input.pivotTableName}"。`,
+				title: localize(locale, "Delete pivot table", "删除透视表"),
+				description: zh
+					? `这会删除透视表“${input.pivotTableName}”。`
+					: `This will delete pivot table "${input.pivotTableName}".`,
 			});
 
 		case "remove_table": {
-			const keepData = input.keepData !== false; // 默认 true（保留数据）
+			const keepData = input.keepData !== false;
 			return requestConfirm({
 				toolName: name,
-				title: "删除表格",
+				title: localize(locale, "Delete table", "删除表格"),
 				description: keepData
-					? `即将删除表格"${input.name}"的结构（数据将保留）。`
-					: `即将删除表格"${input.name}"及其全部数据，此操作不可恢复。`,
+					? localize(
+						locale,
+						`This will remove the structure of table "${input.name}" while keeping the underlying data.`,
+						`这会移除表格“${input.name}”的结构，但保留底层数据。`,
+					)
+					: localize(
+						locale,
+						`This will delete table "${input.name}" and all of its data. This action cannot be undone.`,
+						`这会删除表格“${input.name}”及其全部数据。此操作无法撤销。`,
+					),
 			});
 		}
 
 		case "remove_shape":
 			return requestConfirm({
 				toolName: name,
-				title: "删除形状/图片",
-				description: `即将删除形状或图片"${input.name}"。`,
+				title: localize(locale, "Delete shape or picture", "删除形状或图片"),
+				description: zh
+					? `这会删除形状或图片“${input.name}”。`
+					: `This will delete shape or picture "${input.name}".`,
 			});
 
 		case "remove_slicer":
 			return requestConfirm({
 				toolName: name,
-				title: "删除切片器",
-				description: `即将删除切片器"${input.name}"。`,
+				title: localize(locale, "Delete slicer", "删除切片器"),
+				description: zh
+					? `这会删除切片器“${input.name}”。`
+					: `This will delete slicer "${input.name}".`,
 			});
 
 		case "remove_comment":
 			return requestConfirm({
 				toolName: name,
-				title: "删除批注",
-				description: `即将删除单元格 ${input.cell} 的批注。`,
+				title: localize(locale, "Delete comment", "删除批注"),
+				description: zh
+					? `这会删除单元格 ${input.cell} 上的批注。`
+					: `This will delete the comment on cell ${input.cell}.`,
 			});
 
 		case "remove_hyperlink":
 			return requestConfirm({
 				toolName: name,
-				title: "删除超链接",
-				description: `即将删除单元格 ${input.cellAddress} 的超链接。`,
+				title: localize(locale, "Delete hyperlink", "删除超链接"),
+				description: zh
+					? `这会移除单元格 ${input.cellAddress} 上的超链接。`
+					: `This will remove the hyperlink from cell ${input.cellAddress}.`,
 			});
 
 		case "remove_validation":
 			return requestConfirm({
 				toolName: name,
-				title: "删除数据验证",
-				description: `即将移除区域 ${input.range} 的数据验证规则。`,
+				title: localize(locale, "Delete data validation", "删除数据验证"),
+				description: zh
+					? `这会移除 ${input.range} 上的数据验证规则。`
+					: `This will remove data-validation rules from ${input.range}.`,
 			});
 
 		case "remove_cell_state":
 			return requestConfirm({
 				toolName: name,
-				title: "删除单元格状态",
-				description: `即将清除区域 ${input.range} 的单元格状态样式。`,
+				title: localize(locale, "Delete cell state", "删除单元格状态"),
+				description: zh
+					? `这会清除 ${input.range} 上的单元格状态样式。`
+					: `This will clear cell-state styling from ${input.range}.`,
 			});
 
 		case "remove_cell_type":
 			return requestConfirm({
 				toolName: name,
-				title: "删除单元格类型",
-				description: `即将移除区域 ${input.range} 的单元格类型（如复选框、按钮等）。`,
+				title: localize(locale, "Delete cell type", "删除单元格类型"),
+				description: zh
+					? `这会移除 ${input.range} 上的自定义单元格类型，例如复选框或按钮。`
+					: `This will remove custom cell types from ${input.range}, such as checkboxes or buttons.`,
 			});
 
 		case "execute_code":
 			return requestConfirm({
 				toolName: name,
-				title: "执行代码",
-				description: `即将执行 AI 生成的代码直接操作工作簿，代码可能读写任意单元格或结构，执行后部分操作不可撤销。`,
+				title: localize(locale, "Execute code", "执行代码"),
+				description: zh
+					? "这会直接对工作簿执行 AI 生成的代码。代码可能读写任意单元格或结构，且部分变更可能不可逆。"
+					: "This will run AI-generated code directly against the workbook. The code may read or write any cells or structures, and some changes may not be reversible.",
 			});
 
 		default:
@@ -262,9 +320,7 @@ async function checkDestructiveOp(
 	}
 }
 
-/** 需要破坏性操作确认的工具集合 */
 const DESTRUCTIVE_TOOLS = new Set([
-	// 数据写入/清除类（有数据时才弹确认）
 	"write_data",
 	"set_cell",
 	"auto_fill",
@@ -272,7 +328,6 @@ const DESTRUCTIVE_TOOLS = new Set([
 	"delete_rows_cols",
 	"find_and_replace",
 	"merge_cells",
-	// 对象/结构删除类（始终弹确认）
 	"delete_worksheet",
 	"remove_chart",
 	"remove_pivot_table",
@@ -287,83 +342,81 @@ const DESTRUCTIVE_TOOLS = new Set([
 	"execute_code",
 ]);
 
-/**
- * 工具调用分发 hook。
- *
- * 设计要点：
- * - onToolCall 回调签名为 void（SDK 丢弃返回值），结果必须通过 addToolOutput 回报
- * - addToolOutput 由 useChat 返回，通过 ref 桥接（打破 onToolCall ↔ useChat 循环依赖）
- * - 错误路径用 state:"output-error" + errorText（UI 显示红色 Error badge）
- * - 成功路径用默认 state:"output-available" + output（UI 显示绿色 Completed badge）
- * - requestConfirm 来自 useDestructiveGuard，通过 ref 桥接保持 stable 引用
- */
 export function useToolDispatch(
 	workbook: SpreadWorkbook | null,
-	pendingFilesRef: React.RefObject<Map<string, string>>,
-	requestConfirm: (p: ConfirmRequest) => Promise<boolean>,
+	pendingFilesRef: RefObject<Map<string, string>>,
+	requestConfirm: (params: ConfirmRequest) => Promise<boolean>,
 	onAfterExecuteCode?: () => void,
+	locale: AppLocale = "en",
 ) {
 	const addToolOutputRef = useRef<AddToolOutputFn | null>(null);
 	const workbookRef = useRef(workbook);
-	workbookRef.current = workbook;
 	const cacheRef = useRef<ToolCache>(createToolCache());
-	// ref 桥接，确保 onToolCall 总能访问最新的 requestConfirm，而不需要重建 callback
 	const requestConfirmRef = useRef(requestConfirm);
-	requestConfirmRef.current = requestConfirm;
 	const onAfterExecuteCodeRef = useRef(onAfterExecuteCode);
-	onAfterExecuteCodeRef.current = onAfterExecuteCode;
+	const localeRef = useRef<AppLocale>(locale);
 
-	/**
-	 * 安全调用 addToolOutput。
-	 * 始终从 ref 读取最新函数引用，避免异步 handler 执行期间组件重渲染导致过期闭包。
-	 */
+	useEffect(() => {
+		workbookRef.current = workbook;
+		requestConfirmRef.current = requestConfirm;
+		onAfterExecuteCodeRef.current = onAfterExecuteCode;
+		localeRef.current = locale;
+	}, [workbook, requestConfirm, onAfterExecuteCode, locale]);
+
 	const emitOutput = useCallback((args: Parameters<AddToolOutputFn>[0], toolName: string) => {
-		const fn = addToolOutputRef.current;
-		if (!fn) {
-			console.error(`[useToolDispatch] addToolOutputRef 为空，无法回报 ${toolName} 的结果`);
+		const addToolOutput = addToolOutputRef.current;
+		if (!addToolOutput) {
+			console.error(`[useToolDispatch] addToolOutputRef is missing; cannot emit the result for ${toolName}`);
 			return;
 		}
-		void fn(args).catch((e) => {
-			console.error(`[useToolDispatch] addToolOutput 调用异常 (${toolName}):`, e);
+
+		void Promise.resolve(addToolOutput(args)).catch((error: unknown) => {
+			console.error(`[useToolDispatch] addToolOutput failed (${toolName}):`, error);
 		});
 	}, []);
 
 	const onToolCall = useCallback<NonNullable<ChatOnToolCallCallback<AppUIMessage>>>(async ({ toolCall }) => {
 		if (toolCall.dynamic) return;
 
-		const wb = workbookRef.current;
+		const workbookInstance = workbookRef.current;
 		const name = toolCall.toolName;
 		const toolCallId = toolCall.toolCallId;
+		const currentLocale = localeRef.current;
+		const resolvedLocale = normalizeLocale(currentLocale);
+		const zh = resolvedLocale === "zh-CN";
 
-		// addToolOutput 未就绪（理论上不应发生，但 ref 桥接存在时序风险）
 		if (!addToolOutputRef.current) {
-			console.error(`[useToolDispatch] addToolOutputRef 为空 — 工具 ${name} 被跳过`);
+			console.error(`[useToolDispatch] addToolOutputRef is missing; skipping tool ${name}`);
 			return;
 		}
 
-		// 服务端工具由 streamText 自动执行，跳过
-		if (isServerTool(name)) return;
-
-		// MCP 工具由服务端 execute 函数处理，跳过
-		if (name.startsWith("mcp__")) return;
+		if (isServerTool(name) || name.startsWith("mcp__")) return;
 
 		const cache = cacheRef.current;
+		const input = toolCall.input as Record<string, unknown>;
 
 		try {
-			// Agent 工具不依赖 workbook，其余工具要求 workbook 就绪
-			if (!wb && !AGENT_TOOLS.has(name)) {
-				emitOutput({ state: "output-error", tool: name, toolCallId, errorText: "SpreadJS 尚未初始化" }, name);
+			if (!workbookInstance && !AGENT_TOOLS.has(name)) {
+				emitOutput({
+					state: "output-error",
+					tool: name,
+					toolCallId,
+					errorText: localize(currentLocale, "SpreadJS is not ready yet", "SpreadJS 尚未就绪"),
+				}, name);
 				return;
 			}
 
 			const handler = getHandler(name);
 			if (!handler) {
-				emitOutput({ state: "output-error", tool: name, toolCallId, errorText: `未知工具: ${name}` }, name);
+				emitOutput({
+					state: "output-error",
+					tool: name,
+					toolCallId,
+					errorText: localize(currentLocale, `Unknown tool: ${name}`, `未知工具：${name}`),
+				}, name);
 				return;
 			}
 
-			// import_file: 从暂存区注入 base64
-			const input = toolCall.input as Record<string, unknown>;
 			if (name === "import_file" && !input.fileBase64) {
 				const fileName = input.fileName as string;
 				const cached = pendingFilesRef.current?.get(fileName);
@@ -371,62 +424,97 @@ export function useToolDispatch(
 					input.fileBase64 = cached;
 					pendingFilesRef.current?.delete(fileName);
 				} else {
-					emitOutput({ state: "output-error", tool: name, toolCallId, errorText: `文件「${fileName}」未在暂存区找到，请重新上传` }, name);
+					emitOutput({
+						state: "output-error",
+						tool: name,
+						toolCallId,
+						errorText: zh
+							? `上传缓存中找不到文件“${fileName}”。请重新上传后再试。`
+							: `File "${fileName}" was not found in the pending upload cache. Please upload it again.`,
+					}, name);
 					return;
 				}
 			}
 
-			// add_picture: 从暂存区注入上传图片的 DataURL
 			if (name === "add_picture" && !input.base64 && input.fileName) {
 				const fileName = input.fileName as string;
 				const cached = pendingFilesRef.current?.get(fileName);
 				if (cached) {
 					input.base64 = cached;
-					// 不从 ref 删除，同一张图片可能被多次插入
 				} else {
-					emitOutput({ state: "output-error", tool: name, toolCallId, errorText: `图片「${fileName}」未在暂存区找到，请重新上传后再试` }, name);
+					emitOutput({
+						state: "output-error",
+						tool: name,
+						toolCallId,
+						errorText: zh
+							? `上传缓存中找不到图片“${fileName}”。请重新上传后重试。`
+							: `Image "${fileName}" was not found in the pending upload cache. Please upload it again and retry.`,
+					}, name);
 					return;
 				}
 			}
 
-			// 只读工具缓存命中 → 直接返回
 			const cachedResult = cache.get(name, input);
 			if (cachedResult) {
 				emitOutput({ tool: name, toolCallId, output: cachedResult }, name);
 				return;
 			}
 
-			// 破坏性操作保护：检测目标区域是否有已有数据，等待用户确认
-			if (wb && DESTRUCTIVE_TOOLS.has(name)) {
-				const confirmed = await checkDestructiveOp(wb, name, input, requestConfirmRef.current);
+			if (workbookInstance && DESTRUCTIVE_TOOLS.has(name)) {
+				const confirmed = await checkDestructiveOp(
+					workbookInstance,
+					name,
+					input,
+					requestConfirmRef.current,
+					currentLocale,
+				);
 				if (!confirmed) {
 					emitOutput({
 						state: "output-error",
 						tool: name,
 						toolCallId,
-						errorText: "用户已取消该操作，请根据用户的意图调整方案或询问用户如何继续。",
+						errorText: localize(
+							currentLocale,
+							"The user canceled this action. Adjust the plan or ask how they want to proceed.",
+							"用户取消了此操作。请调整计划，或询问用户希望如何继续。",
+						),
 					}, name);
 					return;
 				}
 			}
 
-			const result: { success: boolean; data?: unknown; error?: string } =
-				await withTimeout(handler(wb!, input), TOOL_TIMEOUT_MS, name);
-			// handler 返回 success:false 时走 error 状态，让 UI 明确展示
+			const bridge = await loadBridge();
+			bridge.setBridgeLocale(currentLocale);
+			const result: { success: boolean; data?: unknown; error?: string } = await withTimeout(
+				handler(workbookInstance as SpreadWorkbook, input, { locale: currentLocale }),
+				TOOL_TIMEOUT_MS,
+				name,
+			);
+
 			if (!result.success) {
-				emitOutput({ state: "output-error", tool: name, toolCallId, errorText: result.error ?? "工具执行失败" }, name);
+				emitOutput({
+					state: "output-error",
+					tool: name,
+					toolCallId,
+					errorText: result.error ?? localize(currentLocale, "Tool execution failed", "工具执行失败"),
+				}, name);
 			} else if (name === "take_screenshot") {
-				// 截图工具：构造 AI SDK 多模态 tool result，让模型能"看到"图片
-				const sd = result.data as ScreenshotToolData | undefined;
-				if (sd?.imageBase64) {
-					const screenshotOutput = {
-						type: "content" as const,
-						value: [
-							{ type: "text" as const, text: `截图完成: ${sd.sheetName} (${sd.width}×${sd.height})` },
-							{ type: "media" as const, mediaType: "image/png" as const, data: sd.imageBase64 as string },
-						],
-					};
-					emitOutput({ tool: name, toolCallId, output: screenshotOutput }, name);
+				const screenshot = result.data as ScreenshotToolData | undefined;
+				if (screenshot?.imageBase64) {
+					const text = zh
+						? `截图已生成：${screenshot.sheetName}（${screenshot.width}×${screenshot.height}）`
+						: `Screenshot captured: ${screenshot.sheetName} (${screenshot.width}x${screenshot.height})`;
+					emitOutput({
+						tool: name,
+						toolCallId,
+						output: {
+							type: "content" as const,
+							value: [
+								{ type: "text" as const, text },
+								{ type: "media" as const, mediaType: "image/png" as const, data: screenshot.imageBase64 },
+							],
+						},
+					}, name);
 				} else {
 					emitOutput({ tool: name, toolCallId, output: result }, name);
 				}
@@ -435,24 +523,18 @@ export function useToolDispatch(
 				emitOutput({ tool: name, toolCallId, output: result }, name);
 			}
 
-			// 非只读、非 Agent 工具（即写入类工具）执行后清空缓存
 			if (!cache.isReadOnly(name) && !AGENT_TOOLS.has(name)) {
 				cache.invalidate();
-				// execute_code 在沙箱中运行，程序化操作不一定触发 SpreadJS 选区事件，
-				// 执行完后主动刷新选区显示
 				if (name === "execute_code") {
 					onAfterExecuteCodeRef.current?.();
 				}
 			}
-		} catch (e) {
-			// 兜底：任何未预期异常都不能让 tool part 卡在 input-available
-			const msg = e instanceof Error ? e.message : String(e);
-			console.error(`[useToolDispatch] ${name} 未捕获异常:`, e);
-			emitOutput({ state: "output-error", tool: name, toolCallId, errorText: msg }, name);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(`[useToolDispatch] Unhandled exception from ${name}:`, error);
+			emitOutput({ state: "output-error", tool: name, toolCallId, errorText: message }, name);
 		}
-	// refs 持有可变值，callback 本身无需重建
-	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [emitOutput]);
+	}, [emitOutput, pendingFilesRef]);
 
 	return { onToolCall, addToolOutputRef };
 }

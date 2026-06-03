@@ -6,17 +6,23 @@ import { SpreadJSProvider } from "@/lib/spreadjs/context";
 import { ErrorBoundary } from "@/components/error-boundary";
 import ChatPanel from "@/components/ChatPanel";
 import { useResizablePanel } from "@/lib/hooks/useResizablePanel";
+import { useTranslation } from "@/lib/i18n/react";
 import { SparklesIcon, PanelRightOpenIcon, PanelRightCloseIcon } from "lucide-react";
+
+function LoadingDesigner() {
+    const { t } = useTranslation();
+    return (
+        <div className="flex h-full items-center justify-center text-muted-foreground">
+            {t("app.loadingDesigner")}
+        </div>
+    );
+}
 
 const SpreadJSDesigner = dynamic(
     () => import("@/components/SpreadJSDesigner"),
     {
         ssr: false,
-        loading: () => (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-                加载 SpreadJS Designer...
-            </div>
-        ),
+        loading: () => <LoadingDesigner />,
     },
 );
 
@@ -35,6 +41,7 @@ const BG_IDLE = "var(--border)";
 const BG_HOVER = "#3b82f6";
 
 export default function Home() {
+    const { t, locale } = useTranslation();
     const { width, dragging, handleProps, setWidth } = useResizablePanel();
     const [isChatCollapsed, setIsChatCollapsed] = useState(false);
 
@@ -66,7 +73,7 @@ export default function Home() {
                 {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
                 {/* 左侧：SpreadJS Designer（isolate 防止内部 shape/chart 的 z-index 穿透到全局） */}
                 <div className="relative flex-1 min-w-0 isolate overflow-hidden">
-                    <ErrorBoundary label="SpreadJS Designer">
+                    <ErrorBoundary label={t("app.spreadjsDesigner")} locale={locale}>
                         <SpreadJSDesigner />
                     </ErrorBoundary>
                     {/* 展开/收起按鈕（浮层，始终显示在 designer 右上角） */}
@@ -76,7 +83,7 @@ export default function Home() {
                         className="absolute right-2 top-2 z-10 inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background/90 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur-sm hover:text-foreground transition-colors"
                     >
                         <SparklesIcon className="size-3.5 text-primary" />
-                        AI 助手
+                        {t("app.aiAssistant")}
                         {isChatCollapsed ? (
                             <PanelRightOpenIcon className="size-3.5" />
                         ) : (
@@ -97,7 +104,7 @@ export default function Home() {
                         onMouseLeave={onHandleLeave}
                     />
                     <div className="flex-1 min-w-0 border-l border-border/60 shadow-[-1px_0_3px_0_rgb(0_0_0/0.04)]">
-                        <ErrorBoundary label="Chat Panel">
+                        <ErrorBoundary label={t("app.chatPanel")} locale={locale}>
                             <ChatPanel chatPanelWidth={width} onChatPanelWidthChange={setWidth} />
                         </ErrorBoundary>
                     </div>

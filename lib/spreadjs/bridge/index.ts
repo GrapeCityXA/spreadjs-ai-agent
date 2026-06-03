@@ -77,3 +77,5 @@ export { addShape, modifyShape, removeShape, addImage, addPicture } from "./shap
 
 // slicer — 切片器
 export { addSlicer, modifySlicer, removeSlicer } from "./slicer";
+
+export { bridgeT, setBridgeLocale } from "./internal";

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
+import { useTranslation } from "@/lib/i18n/react";
+import type { AppLocale } from "@/lib/i18n";
 import { useSpreadJS } from "@/lib/spreadjs/context";
 import { getToolList, getToolDef } from "@/lib/tools/registry";
 import { introspectSchema } from "@/lib/debug/schema-introspect";
@@ -16,14 +18,15 @@ import { CodeIcon, ListIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-re
 type InputMode = "form" | "json";
 
 export function DebugPanel() {
+	const { t, locale } = useTranslation();
 	const { workbook, isReady } = useSpreadJS();
-	const tools = useMemo(() => getToolList(), []);
+	const tools = useMemo(() => getToolList(locale), [locale]);
 
 	const [selectedTool, setSelectedTool] = useState(tools[0]?.name ?? "");
 	const [inputMode, setInputMode] = useState<InputMode>("form");
-	const [paramText, setParamText] = useState(() => getDefaultJson(selectedTool));
+	const [paramText, setParamText] = useState(() => getDefaultJson(selectedTool, locale));
 	const [formValues, setFormValues] = useState<Record<string, unknown>>(() =>
-		getDefaultFormValues(selectedTool),
+		getDefaultFormValues(selectedTool, locale),
 	);
 	const [jsonError, setJsonError] = useState<string>();
 	const [session, setSession] = useState<DebugSession | null>(null);
@@ -31,17 +34,17 @@ export function DebugPanel() {
 	const [logOpen, setLogOpen] = useState(false);
 
 	const fields = useMemo(() => {
-		const def = getToolDef(selectedTool);
+		const def = getToolDef(selectedTool, locale);
 		return def ? introspectSchema(def.inputSchema) : [];
-	}, [selectedTool]);
+	}, [locale, selectedTool]);
 
 	const handleToolChange = useCallback((name: string) => {
 		setSelectedTool(name);
-		setParamText(getDefaultJson(name));
-		setFormValues(getDefaultFormValues(name));
+		setParamText(getDefaultJson(name, locale));
+		setFormValues(getDefaultFormValues(name, locale));
 		setJsonError(undefined);
 		setSession(null);
-	}, []);
+	}, [locale]);
 
 	const handleModeSwitch = useCallback(
 		(mode: InputMode) => {
@@ -68,10 +71,10 @@ export function DebugPanel() {
 	);
 
 	const handleReset = useCallback(() => {
-		setParamText(getDefaultJson(selectedTool));
-		setFormValues(getDefaultFormValues(selectedTool));
+		setParamText(getDefaultJson(selectedTool, locale));
+		setFormValues(getDefaultFormValues(selectedTool, locale));
 		setJsonError(undefined);
-	}, [selectedTool]);
+	}, [locale, selectedTool]);
 
 	const handleExecute = useCallback(async () => {
 		let parsed: unknown;
@@ -79,7 +82,7 @@ export function DebugPanel() {
 			try {
 				parsed = JSON.parse(paramText);
 			} catch (e) {
-				setJsonError(`JSON 解析失败: ${(e as Error).message}`);
+				setJsonError(t("debug.jsonParseFailed", { message: (e as Error).message }));
 				return;
 			}
 		} else {
@@ -90,7 +93,7 @@ export function DebugPanel() {
 		setSession(null);
 
 		try {
-			const result = await executeDebugDirect(selectedTool, parsed, workbook);
+			const result = await executeDebugDirect(selectedTool, parsed, workbook, locale);
 			setSession(result);
 			setLogOpen(true);
 		} catch (e) {
@@ -111,12 +114,12 @@ export function DebugPanel() {
 		} finally {
 			setRunning(false);
 		}
-	}, [selectedTool, inputMode, paramText, formValues, workbook]);
+	}, [selectedTool, inputMode, paramText, formValues, workbook, locale, t]);
 
 	const toolDescription = useMemo(() => {
-		const def = getToolDef(selectedTool);
+		const def = getToolDef(selectedTool, locale);
 		return def?.description;
-	}, [selectedTool]);
+	}, [locale, selectedTool]);
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden">
@@ -148,7 +151,7 @@ export function DebugPanel() {
 							}`}
 						>
 							<ListIcon className="size-3" />
-							表单
+							{t("debug.form")}
 						</button>
 						<button
 							type="button"
@@ -160,14 +163,14 @@ export function DebugPanel() {
 							}`}
 						>
 							<CodeIcon className="size-3" />
-							JSON
+							{t("debug.json")}
 						</button>
 						<button
 							type="button"
 							onClick={handleReset}
 							className="ml-auto text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1.5"
 						>
-							Reset
+							{t("common.reset")}
 						</button>
 					</div>
 
@@ -192,14 +195,14 @@ export function DebugPanel() {
 							disabled={running || !selectedTool}
 							className="w-full rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
 						>
-							{running ? "执行中..." : "▶ Execute"}
+							{running ? t("debug.running") : `▶ ${t("debug.execute")}`}
 						</button>
 						<div className="flex items-center gap-2 text-[10px]">
 							<span className="text-amber-600 dark:text-amber-400">
-								⚠ 操作会真实修改工作簿
+								{`⚠ ${t("debug.liveWorkbookWarning")}`}
 							</span>
 							{!isReady && (
-								<span className="text-red-500">· SpreadJS 未就绪</span>
+								<span className="text-red-500">· {t("debug.spreadjsNotReady")}</span>
 							)}
 						</div>
 					</div>
@@ -218,7 +221,7 @@ export function DebugPanel() {
 					) : (
 						<ChevronRightIcon className="size-3" />
 					)}
-					执行日志
+					{t("debug.executionLog")}
 					{session && (
 						<span className="text-[10px] tabular-nums">
 							({session.totalMs}ms)
@@ -235,9 +238,9 @@ export function DebugPanel() {
 	);
 }
 
-function getDefaultJson(toolName: string): string {
+function getDefaultJson(toolName: string, locale?: AppLocale): string {
 	if (!toolName) return "{}";
-	const def = getToolDef(toolName);
+	const def = getToolDef(toolName, locale);
 	if (!def) return "{}";
 	try {
 		const template = schemaToTemplate(def.inputSchema);
@@ -247,9 +250,9 @@ function getDefaultJson(toolName: string): string {
 	}
 }
 
-function getDefaultFormValues(toolName: string): Record<string, unknown> {
+function getDefaultFormValues(toolName: string, locale?: AppLocale): Record<string, unknown> {
 	if (!toolName) return {};
-	const def = getToolDef(toolName);
+	const def = getToolDef(toolName, locale);
 	if (!def) return {};
 	const fields = introspectSchema(def.inputSchema);
 	return buildDefaults(fields);

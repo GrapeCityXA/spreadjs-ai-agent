@@ -1,11 +1,33 @@
 import type { SpreadWorkbook, SpreadWorksheet, ToolResult } from "@/lib/agent/types";
 import { MAX_STRING_LENGTH } from "@/lib/config";
+import {
+	createTranslator,
+	DEFAULT_LOCALE,
+	normalizeLocale,
+	type AppLocale,
+	type TranslationKey,
+	type TranslationValues,
+} from "@/lib/i18n";
 import GC from "@grapecity-software/spread-sheets";
+
+let bridgeTranslate = createTranslator(DEFAULT_LOCALE);
+
+export function setBridgeLocale(locale: AppLocale = DEFAULT_LOCALE) {
+	bridgeTranslate = createTranslator(normalizeLocale(locale));
+}
+
+export function bridgeT(key: TranslationKey, values?: TranslationValues): string {
+	return bridgeTranslate(key, values);
+}
+
+export function toErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 export function getSheet(workbook: SpreadWorkbook, sheetName?: string): SpreadWorksheet {
 	if (sheetName) {
 		const sheet = workbook.getSheetFromName(sheetName);
-		if (!sheet) throw new Error(`工作表 "${sheetName}" 不存在`);
+		if (!sheet) throw new Error(bridgeT("bridge.sheet.notFound", { name: sheetName }));
 		return sheet;
 	}
 	return workbook.getActiveSheet();
@@ -27,7 +49,7 @@ export function safe<T>(fn: () => T): ToolResult<T> {
 		return { success: true, data: fn() };
 	} catch (e) {
 		console.error("[bridge]", e);
-		return { success: false, error: e instanceof Error ? e.message : String(e) };
+		return { success: false, error: toErrorMessage(e) };
 	}
 }
 
@@ -62,7 +84,7 @@ export function addressToGCRanges(workbook: SpreadWorkbook, address: string) {
 	const formula = rangePart.includes(",") ? `SUM(${rangePart})` : rangePart;
 	const result = GC.Spread.Sheets.CalcEngine.formulaToRanges(sheet, formula, 0, 0);
 	const ranges = (result as { ranges: GC.Spread.Sheets.Range[] }[]).flatMap((r) => r.ranges);
-	if (ranges.length === 0) throw new Error(`无法解析地址: ${address}`);
+	if (ranges.length === 0) throw new Error(bridgeT("bridge.address.parseFailed", { address }));
 	return { sheet, ranges };
 }
 
