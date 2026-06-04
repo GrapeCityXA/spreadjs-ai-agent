@@ -24,11 +24,15 @@ export function getStoredMcpClientId(): string | undefined {
 }
 
 /** 内置 spreadjs-mcp server 配置，随 BUILTIN_CONFIG_VERSION 版本化管理 */
-const BUILTIN_CONFIG_VERSION = 4;
+const BUILTIN_CONFIG_VERSION = 5;
+const SPREADJS_MCP_TOKEN_PLACEHOLDER = "REPLACE_WITH_YOUR_GRAPECITY_MCP_TOKEN";
 
-function buildBuiltinSpreadjsServer(enabled = false) {
+function buildBuiltinSpreadjsServer(token = SPREADJS_MCP_TOKEN_PLACEHOLDER, enabled = false) {
 	return {
-		url: "https://developer.mescius.com/mcp/spreadjs",
+		url: "https://mcp.grapecity.com.cn/mcp/spreadjs",
+		headers: {
+			token,
+		},
 		enabled,
 	};
 }
@@ -67,8 +71,15 @@ function migrateLocalConfig(): string {
 		const config = JSON.parse(raw);
 		config.mcpServers = config.mcpServers ?? {};
 		const current = config.mcpServers["spreadjs-mcp"];
-		const enabled = current?.enabled !== false;
-		config.mcpServers["spreadjs-mcp"] = buildBuiltinSpreadjsServer(enabled);
+		const currentToken = current?.headers?.token;
+		const preservedToken = typeof currentToken === "string" &&
+			currentToken &&
+			currentToken !== SPREADJS_MCP_TOKEN_PLACEHOLDER
+			? currentToken
+			: SPREADJS_MCP_TOKEN_PLACEHOLDER;
+		const enabled = preservedToken !== SPREADJS_MCP_TOKEN_PLACEHOLDER &&
+			current?.enabled !== false;
+		config.mcpServers["spreadjs-mcp"] = buildBuiltinSpreadjsServer(preservedToken, enabled);
 		const migrated = JSON.stringify(config, null, "\t");
 		localStorage.setItem(STORAGE_KEY, migrated);
 		localStorage.setItem(VERSION_KEY, String(BUILTIN_CONFIG_VERSION));
