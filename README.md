@@ -6,6 +6,8 @@ SpreadJS AI Agent 是一个面向 SpreadJS 的 AI 电子表格 Agent。它结合
 
 项目基于 [SpreadJS 官网](https://www.grapecity.com.cn/developer/spreadjs) 和 [`@grapecity-software/spread-sheets`](https://www.npmjs.com/package/@grapecity-software/spread-sheets) 构建，当前仓库使用 `SpreadJS 19.0.1` 及其配套插件。
 
+ _[本仓库内容对应的视频教学课程](https://learn.grapecity.com.cn/course_detail?courseid=course-20260731-001)_ 
+
 ![预览](screenshot.png)
 
 ## 核心特性
