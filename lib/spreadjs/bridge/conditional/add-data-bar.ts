@@ -1,5 +1,5 @@
 import type { SpreadWorkbook, ResolvedRange } from "@/lib/agent/types";
-import { getSheet, normalizeColor, safe, withSuspend } from "../internal";
+import { getSheet, normalizeColor, safe, withSuspendNoRecalc } from "../internal";
 import { toScaleValueType, toRanges } from "./helpers";
 
 export function addDataBar(
@@ -13,7 +13,7 @@ export function addDataBar(
 		const ranges = toRanges(range);
 
 		const color = normalizeColor(input.color);
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			cfs.addDataBarRule(
 				toScaleValueType(input.minType), input.minValue,
 				toScaleValueType(input.maxType), input.maxValue,

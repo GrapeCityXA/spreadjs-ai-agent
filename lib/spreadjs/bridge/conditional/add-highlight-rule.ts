@@ -1,5 +1,5 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
-import { addressToGCRanges, safe, withSuspend } from "../internal";
+import { addressToGCRanges, safe, withSuspendNoRecalc } from "../internal";
 import { CF, toCondStyle } from "./helpers";
 
 export function addHighlightRule(
@@ -25,7 +25,7 @@ export function addHighlightRule(
 			rulesBefore,
 		});
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			switch (ruleType) {
 				case "cellValue": {
 					const opMap: Record<string, number> = {

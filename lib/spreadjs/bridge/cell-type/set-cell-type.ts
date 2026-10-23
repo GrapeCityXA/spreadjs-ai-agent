@@ -1,6 +1,6 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
 import GC from "@grapecity-software/spread-sheets";
-import { getSheet, safe, normalizeColor } from "../internal";
+import { getSheet, safe, normalizeColor, withSuspendNoRecalc } from "../internal";
 
 const CT = GC.Spread.Sheets.CellTypes;
 
@@ -69,11 +69,14 @@ export function setCellType(workbook: SpreadWorkbook, sheetName: string | undefi
 		const sheet = getSheet(workbook, sheetName);
 		const cellType = createCellType(input);
 
-		for (let r = input.row; r < input.row + input.rowCount; r++) {
-			for (let c = input.col; c < input.col + input.colCount; c++) {
-				sheet.setCellType(r, c, cellType);
+		// 逐格 setCellType 会触发逐格重绘；单元格类型不影响公式结果，恢复时不重算
+		withSuspendNoRecalc(sheet, () => {
+			for (let r = input.row; r < input.row + input.rowCount; r++) {
+				for (let c = input.col; c < input.col + input.colCount; c++) {
+					sheet.setCellType(r, c, cellType);
+				}
 			}
-		}
+		});
 
 		return {
 			type: input.type,

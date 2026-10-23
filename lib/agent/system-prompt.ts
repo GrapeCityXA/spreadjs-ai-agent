@@ -306,22 +306,65 @@ ${ctx.mcpContext}
 		});
 };
 
-const sections: SectionBuilder[] = [
+/**
+ * 静态段：整个会话期间稳定，是缓存前缀的主体。
+ *
+ * 顺序即优先级，但更硬的约束是**它们必须待在最前面**——OpenAI 兼容接口的上下文
+ * 缓存按前缀逐字节匹配，这一段越稳定，每一步请求能复用的就越多。
+ */
+const STATIC_SECTIONS: SectionBuilder[] = [
 	role,
 	security,
 	capabilities,
-	workbookState,
-	userModifications,
-	taskState,
 	toolUsage,
 	behavior,
 	outputFormat,
 	mcpSection,
 ];
 
-export function buildSystemPrompt(ctx: SystemPromptContext = {}): string {
-	return sections
+/**
+ * 动态段：每次请求都可能变。
+ *
+ * **必须放在请求的末尾，不能留在 `system` 里。** 它们原本夹在 system 中间，
+ * 于是「当前工作簿状态」一变，后面所有静态段连同**全部对话历史**一起作废——
+ * 实测缓存命中率只有一半，未命中的那些步每次要重发几十 K 的前缀。
+ *
+ * 放到末尾之后，前缀（静态 system + 历史消息）继续命中，只有这几段自己需要重算。
+ */
+const DYNAMIC_SECTIONS: SectionBuilder[] = [
+	workbookState,
+	userModifications,
+	taskState,
+];
+
+function joinSections(ctx: SystemPromptContext, builders: SectionBuilder[]): string {
+	return builders
 		.map((fn) => fn(ctx))
 		.filter(Boolean)
 		.join("\n\n");
+}
+
+/** 稳定的 system 提示词。**整个会话期间不应变化**——变了就等于把缓存前缀作废 */
+export function buildStaticSystemPrompt(ctx: SystemPromptContext = {}): string {
+	return joinSections(ctx, STATIC_SECTIONS);
+}
+
+/** 随环境变化的那部分。由路由拼成一条尾部消息，**不要放回 system** */
+export function buildDynamicContextPrompt(ctx: SystemPromptContext = {}): string {
+	return joinSections(ctx, DYNAMIC_SECTIONS);
+}
+
+/**
+ * 把动态上下文包成尾部消息的内容。
+ *
+ * 用 `user` 角色而不是 `system`：OpenAI 兼容接口普遍接受连续的 user 消息，
+ * 而 system 出现在对话中途各家支持不一。开头那句点明它是**状态快照**而不是新指令，
+ * 免得模型把它当成用户又说了句话来回。
+ */
+export function wrapDynamicContextPrompt(dynamic: string, locale?: AppLocale): string {
+	const header = pickLocaleText({ locale }, {
+		en: "[Environment snapshot — refreshed automatically before every step. This is not a new instruction.]",
+		"zh-CN": "【环境快照 · 每一步自动刷新，不是用户的新指令】",
+	});
+	return `${header}\n\n${dynamic}`;
 }

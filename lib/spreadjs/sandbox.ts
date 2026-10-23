@@ -115,11 +115,11 @@ export function executeSandboxed(
 		};
 	}
 	finally {
+		// 恢复渲染与计算。成功与失败路径都走这里，不要再在下面调一次——
+		// 重复的 resumeAll 会让整表公式重算两遍
 		resumeAll(workbook);
 	}
 
-	// ⑤ 恢复渲染
-	resumeAll(workbook);
 	sandboxEvent.emitPhase(executionId, "done");
 
 	return {

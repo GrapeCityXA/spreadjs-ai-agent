@@ -1,5 +1,5 @@
 import type { SpreadWorkbook, ResolvedRange } from "@/lib/agent/types";
-import { getSheet, safe, withSuspend } from "../internal";
+import { getSheet, safe, withSuspendNoRecalc } from "../internal";
 import { CF, toRanges } from "./helpers";
 
 export function addIconSet(
@@ -35,7 +35,7 @@ export function addIconSet(
 			fiveBoxes: CF.IconSetType.fiveBoxes,
 		};
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			const rule = cfs.addIconSetRule(
 				iconMap[input.iconSetType] ?? CF.IconSetType.threeArrowsColored,
 				ranges,

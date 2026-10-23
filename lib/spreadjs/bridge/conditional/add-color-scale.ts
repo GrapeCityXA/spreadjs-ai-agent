@@ -1,5 +1,5 @@
 import type { SpreadWorkbook, ResolvedRange } from "@/lib/agent/types";
-import { getSheet, normalizeColor, safe, withSuspend } from "../internal";
+import { getSheet, normalizeColor, safe, withSuspendNoRecalc } from "../internal";
 import { toScaleValueType, toRanges } from "./helpers";
 
 export function addColorScale(
@@ -20,7 +20,7 @@ export function addColorScale(
 		const minC = normalizeColor(input.minColor);
 		const maxC = normalizeColor(input.maxColor);
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			if (input.scaleType === "threeColor" && input.midType && input.midColor !== undefined) {
 				const midC = normalizeColor(input.midColor);
 				cfs.add3ScaleRule(

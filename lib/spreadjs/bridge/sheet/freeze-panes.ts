@@ -1,5 +1,5 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
-import { getSheet, safe, withSuspend } from "../internal";
+import { getSheet, safe, withSuspendNoRecalc } from "../internal";
 
 export function freezePanes(
 	workbook: SpreadWorkbook,
@@ -12,7 +12,7 @@ export function freezePanes(
 	return safe(() => {
 		const sheet = getSheet(workbook, sheetName);
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			sheet.frozenRowCount(frozenRows);
 			sheet.frozenColumnCount(frozenColumns);
 			if (trailingRows !== undefined) sheet.frozenTrailingRowCount(trailingRows);

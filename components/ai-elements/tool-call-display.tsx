@@ -112,6 +112,34 @@ function isItemInProgress(item: MixedPartItem): boolean {
 	return item.part.state === "input-available";
 }
 
+/**
+ * MixedGroup 的 items 数组每次渲染都会重建（[...mixedBuf]），默认浅比较永远不相等，
+ * memo 形同虚设。这里按「分组内容是否真的变化」比较：
+ * - reasoning：文本与流式状态
+ * - tool：位置 + part.state（part 对象会被 AI SDK 原地修改，
+ *   与 ToolCallDisplay 的备忘策略保持一致）
+ */
+function areMixedGroupPropsEqual(
+	prev: { items: MixedPartItem[]; interrupted?: boolean },
+	next: { items: MixedPartItem[]; interrupted?: boolean },
+): boolean {
+	if (prev.interrupted !== next.interrupted) return false;
+	if (prev.items.length !== next.items.length) return false;
+	for (let i = 0; i < prev.items.length; i++) {
+		const a = prev.items[i];
+		const b = next.items[i];
+		if (a.kind !== b.kind) return false;
+		if (a.kind === "reasoning" && b.kind === "reasoning") {
+			if (a.text !== b.text || a.state !== b.state) return false;
+		} else if (a.kind === "tool" && b.kind === "tool") {
+			if (a.index !== b.index) return false;
+			if (a.part.state !== b.part.state) return false;
+			if (a.part.toolCallId !== b.part.toolCallId) return false;
+		}
+	}
+	return true;
+}
+
 export const MixedGroup = memo(function MixedGroup({
 	items,
 	interrupted,
@@ -157,11 +185,14 @@ export const MixedGroup = memo(function MixedGroup({
 			{exposedItem !== null && renderMixedItem(exposedItem, collapsedItems.length, interrupted)}
 		</div>
 	);
-});
+}, areMixedGroupPropsEqual);
 
 function renderMixedItem(item: MixedPartItem, keyIndex: number, interrupted?: boolean): ReactNode {
 	if (item.kind === "reasoning") {
-		const reasoningKey = `mixed-r-${keyIndex}-${item.state ?? "done"}-${interrupted ? "interrupted" : "active"}`;
+		// key 里**不含 state**：state 从 streaming 翻到 done 时若换了 key，组件会重挂载，
+		// 逐字显示的进度随即清零、未显示的部分一次性蹦出来。key 保持稳定，
+		// 由 ReasoningBlock 自己决定何时从纯文本切到 markdown（放完再切）
+		const reasoningKey = `mixed-r-${keyIndex}-${interrupted ? "interrupted" : "active"}`;
 		return <ReasoningBlock key={reasoningKey} text={item.text} state={item.state} interrupted={interrupted} />;
 	}
 	return <ToolCallDisplay key={`mixed-t-${item.index}`} part={item.part} interrupted={interrupted} />;

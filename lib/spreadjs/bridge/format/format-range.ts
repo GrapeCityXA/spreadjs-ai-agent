@@ -1,6 +1,6 @@
 import type { SpreadWorkbook, ResolvedRange, FormatSpec } from "@/lib/agent/types";
 import GC from "@grapecity-software/spread-sheets";
-import { addressToGCRanges, getSheet, normalizeColor, safe, withSuspend } from "../internal";
+import { addressToGCRanges, getSheet, normalizeColor, safe, withSuspendNoRecalc } from "../internal";
 
 /** 对单个 GC Range 应用格式 */
 function applyFormat(sheet: GC.Spread.Sheets.Worksheet, gcRange: GC.Spread.Sheets.Range, format: FormatSpec) {
@@ -63,7 +63,7 @@ export function formatRange(
 			gcRanges = [new GC.Spread.Sheets.Range(rangeOrAddress.row, rangeOrAddress.col, rangeOrAddress.rowCount, rangeOrAddress.colCount)];
 		}
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			for (const gcRange of gcRanges) {
 				applyFormat(sheet, gcRange, format);
 			}

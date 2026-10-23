@@ -1,7 +1,7 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
 import GC from "@grapecity-software/spread-sheets";
 import { colIndexToLetter, parseRangeAddress } from "@/lib/spreadjs/utils";
-import { safe } from "../internal";
+import { safe, withSuspend } from "../internal";
 
 interface FindReplaceInput {
 	find: string;
@@ -65,24 +65,36 @@ export function findAndReplace(workbook: SpreadWorkbook, input: FindReplaceInput
 			return { matchCount: matches.length, matches: matches.slice(0, 50) };
 		}
 
-		// 替换
-		let replaceCount = 0;
+		// 替换：先按工作表分组、算好每个单元格的新文本，再每张表挂起一次写入。
+		// 逐格 setValue 且不挂起时，每个匹配都会触发重绘与整表重算
+		const perSheet = new Map<string, Array<{ row: number; col: number; text: string }>>();
 		for (const m of matches) {
 			const sheet = workbook.getSheetFromName(m.sheet);
 			if (!sheet) continue;
+
 			const addr = parseRangeAddress(m.cell);
-			const row = addr.startRow;
-			const col = addr.startCol;
-			const current = sheet.getText(row, col);
-			if (input.useRegex) {
-				const regex = new RegExp(input.find, input.matchCase ? "g" : "gi");
-				sheet.setValue(row, col, current.replace(regex, input.replace));
-			} else {
-				const escaped = input.find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-				const regex = new RegExp(escaped, input.matchCase ? "g" : "gi");
-				sheet.setValue(row, col, current.replace(regex, input.replace));
-			}
-			replaceCount++;
+			const current = sheet.getText(addr.startRow, addr.startCol);
+			const regex = input.useRegex
+				? new RegExp(input.find, input.matchCase ? "g" : "gi")
+				: new RegExp(input.find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), input.matchCase ? "g" : "gi");
+			const text = current.replace(regex, input.replace);
+
+			const list = perSheet.get(m.sheet);
+			const entry = { row: addr.startRow, col: addr.startCol, text };
+			if (list) list.push(entry);
+			else perSheet.set(m.sheet, [entry]);
+		}
+
+		let replaceCount = 0;
+		for (const [sheetName, cells] of perSheet) {
+			const sheet = workbook.getSheetFromName(sheetName);
+			if (!sheet) continue;
+			withSuspend(sheet, () => {
+				for (const cell of cells) {
+					sheet.setValue(cell.row, cell.col, cell.text);
+				}
+			});
+			replaceCount += cells.length;
 		}
 
 		return { matchCount: matches.length, replaceCount };

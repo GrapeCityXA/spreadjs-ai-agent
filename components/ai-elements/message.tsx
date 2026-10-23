@@ -30,6 +30,7 @@ import {
   isValidElement,
   memo,
   useCallback,
+  useDeferredValue,
   useContext,
   useEffect,
   useMemo,
@@ -421,18 +422,36 @@ const streamdownComponents = {
 };
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
-      className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        className
-      )}
-      controls={streamdownControls}
-      components={streamdownComponents}
-      plugins={streamdownPlugins}
-      {...props}
-    />
-  ),
+  function MessageResponse({ className, children, ...props }: MessageResponseProps) {
+    // 流式期间 children 每个 chunk 都变，而这条流水线**每次都要把整篇文档重走一遍**：
+    // remend 补全不完整的 markdown、切块、再重渲最后那个尚未闭合的块。Streamdown 内部
+    // 把「块更新」放进了 transition，但**解析本身是在它自己的 render 里同步跑的**——
+    // 父组件一旦紧急重渲染，这份开销也是紧急的。
+    //
+    // 后果不只是正文顿：主线程被打满之后，滚动、悬停、任务卡片的动画全都排在它后面，
+    // 看起来像是"整个面板都卡"，其实只有一个热点。
+    //
+    // 用 deferred value 把这份开销降级：React 会跳过中间值，并在有更紧急的事时先让路。
+    // 观感上文字仍然连续，但 markdown 的解析次数不再等于 chunk 数。
+    // 思路与思考区那条一样——把「到达」与「渲染」解耦，只是这里的渲染没法逐字揭示，
+    // 所以能做的就是让它别抢道。
+    const deferred = useDeferredValue(children);
+
+    return (
+      <Streamdown
+        className={cn(
+          "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+          className
+        )}
+        controls={streamdownControls}
+        components={streamdownComponents}
+        plugins={streamdownPlugins}
+        {...props}
+      >
+        {deferred}
+      </Streamdown>
+    );
+  },
   (prevProps, nextProps) => prevProps.children === nextProps.children
 );
 

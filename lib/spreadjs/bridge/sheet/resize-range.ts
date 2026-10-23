@@ -1,5 +1,5 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
-import { getSheet, safe, withSuspend } from "../internal";
+import { getSheet, safe, withSuspendNoRecalc } from "../internal";
 
 interface ResizeSpec {
 	rows?: Array<{ index: number; height: number }>;
@@ -14,7 +14,7 @@ export function resizeRange(
 	return safe(() => {
 		const sheet = getSheet(workbook, sheetName);
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			if (spec.rows) {
 				for (const r of spec.rows) {
 					sheet.setRowHeight(r.index, r.height);

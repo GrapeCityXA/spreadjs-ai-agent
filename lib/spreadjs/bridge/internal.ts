@@ -53,18 +53,34 @@ export function safe<T>(fn: () => T): ToolResult<T> {
 	}
 }
 
-/** 挂起 paint + event + calcService，执行回调后恢复。避免中间状态触发重绘和重算。 */
-export function withSuspend<T>(sheet: SpreadWorksheet, fn: () => T): T {
+/**
+ * 挂起 paint + event + calcService，执行回调后恢复。
+ *
+ * `recalcAll = true` 会触发**整张表的公式重算**（SpreadJS 的 `resumeCalcService(true)`）。
+ * 只有会改变值/公式的操作才需要它；只改样式或布局的操作用 `withSuspendNoRecalc`，
+ * 否则一次格式调整也要白算一遍全表公式。
+ */
+function runSuspended<T>(sheet: SpreadWorksheet, fn: () => T, recalcAll: boolean): T {
 	sheet.suspendPaint();
 	sheet.suspendEvent();
 	sheet.suspendCalcService();
 	try {
 		return fn();
 	} finally {
-		sheet.resumeCalcService(true);
+		sheet.resumeCalcService(recalcAll);
 		sheet.resumeEvent();
 		sheet.resumePaint();
 	}
+}
+
+/** 会改值/公式的写入：恢复时重算 */
+export function withSuspend<T>(sheet: SpreadWorksheet, fn: () => T): T {
+	return runSuspended(sheet, fn, true);
+}
+
+/** 只改样式/布局（格式、行高列宽、冻结、条件格式）：恢复时不重算 */
+export function withSuspendNoRecalc<T>(sheet: SpreadWorksheet, fn: () => T): T {
+	return runSuspended(sheet, fn, false);
 }
 
 /**

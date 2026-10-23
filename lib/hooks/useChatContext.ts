@@ -32,7 +32,33 @@ export function useChatContext(
 	metadataProviderRef.current = metadataProvider;
 
 	useEffect(() => {
-		import("@/lib/spreadjs/bridge").then((m) => { bridgeRef.current = m; });
+		let cancelled = false;
+
+		// dev server 重编译/重启后，旧标签页持有的 chunk 哈希会短暂 404（ChunkLoadError）。
+		// 这里必须兜住：一旦失败且不重试，bridgeRef 会永久为 null，
+		// 之后每次请求的 workbookContext 都会静默丢失。
+		const RETRY_DELAYS = [500, 1500, 4000];
+
+		const load = (attempt: number) => {
+			import("@/lib/spreadjs/bridge")
+				.then((m) => {
+					if (!cancelled) bridgeRef.current = m;
+				})
+				.catch((error) => {
+					if (cancelled) return;
+					if (attempt >= RETRY_DELAYS.length) {
+						console.warn("[useChatContext] bridge 模块加载失败，工作簿上下文将不可用", error);
+						return;
+					}
+					setTimeout(() => load(attempt + 1), RETRY_DELAYS[attempt]);
+				});
+		};
+
+		load(0);
+
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 
 	/** 构建 transport body 附加数据（每次 HTTP 请求时调用） */

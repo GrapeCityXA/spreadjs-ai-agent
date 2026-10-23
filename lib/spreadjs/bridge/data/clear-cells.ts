@@ -1,6 +1,6 @@
 import type { SpreadWorkbook, ResolvedRange } from "@/lib/agent/types";
 import GC from "@grapecity-software/spread-sheets";
-import { getSheet, safe } from "../internal";
+import { getSheet, safe, withSuspend } from "../internal";
 
 export function clearCells(
 	workbook: SpreadWorkbook,
@@ -14,11 +14,15 @@ export function clearCells(
 			format: GC.Spread.Sheets.StorageType.style,
 			all: GC.Spread.Sheets.StorageType.data | GC.Spread.Sheets.StorageType.style,
 		};
-		sheet.clear(
-			range.row, range.col, range.rowCount, range.colCount,
-			GC.Spread.Sheets.SheetArea.viewport,
-			storageMap[clearType],
-		);
+		// clear 会触发 RangeChanged，并把被清区域逐格上报。挂起期间事件不会外溢，
+		// 结束后统一重算一次——否则脏标记追踪会被成千上万个单元格拖住
+		withSuspend(sheet, () => {
+			sheet.clear(
+				range.row, range.col, range.rowCount, range.colCount,
+				GC.Spread.Sheets.SheetArea.viewport,
+				storageMap[clearType],
+			);
+		});
 		return null;
 	});
 }

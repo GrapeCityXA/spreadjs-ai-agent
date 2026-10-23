@@ -1,6 +1,6 @@
 import type { SpreadWorkbook } from "@/lib/agent/types";
 import GC from "@grapecity-software/spread-sheets";
-import { getSheet, safe, withSuspend } from "../internal";
+import { getSheet, safe, withSuspendNoRecalc } from "../internal";
 
 export function autoFitColumns(
 	workbook: SpreadWorkbook,
@@ -11,7 +11,7 @@ export function autoFitColumns(
 	return safe(() => {
 		const sheet = getSheet(workbook, sheetName);
 
-		withSuspend(sheet, () => {
+		withSuspendNoRecalc(sheet, () => {
 			for (const col of columns) {
 				sheet.autoFitColumn(col);
 			}

@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronRightIcon } from "lucide-react";
 import { MessageResponse } from "./message";
 import { useTranslation } from "@/lib/i18n/react";
+import { useProgressiveReveal } from "@/lib/hooks/useProgressiveReveal";
+import { useStickToBottom } from "@/lib/hooks/useStickToBottom";
 
 interface ReasoningBlockProps {
 	text: string;
@@ -31,6 +33,15 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 	const isStreaming = state === "streaming";
 	const [open, setOpen] = useState(() => !interrupted);
 	const hasAutoCollapsed = useRef(false);
+
+	// 逐字显示。服务端低频下发（便宜），这里按帧推进（连续），两者解耦。
+	// 放完之前一直停在纯文本上——markdown 解析开销大，且中途切换会造成跳动。
+	const revealed = useProgressiveReveal(text, isStreaming);
+	const showPlainText = isStreaming || revealed < text.length;
+
+	// 内容长过 max-h-40 之后，新出来的字会落到折叠线以下。跟随到底部，
+	// 但用户往上翻时不抢——见 useStickToBottom
+	const attachScroll = useStickToBottom<HTMLDivElement>(revealed);
 
 	useEffect(() => {
 		if (state === "done" && !interrupted && !hasAutoCollapsed.current) {
@@ -82,13 +93,14 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 			<CollapsibleContent>
 				<div className="mt-1 border-l-2 border-border/40 pl-3">
 					<div
+						ref={attachScroll}
 						className="max-h-40 overflow-y-auto chat-scrollbar text-xs leading-relaxed text-muted-foreground/70"
 						tabIndex={0}
 						role="region"
 						aria-label={t("reasoning.content")}
 					>
-						{isStreaming ? (
-							<pre className="whitespace-pre-wrap font-sans">{text}</pre>
+						{showPlainText ? (
+							<pre className="whitespace-pre-wrap font-sans">{text.slice(0, revealed)}</pre>
 						) : (
 							<MessageResponse>{text}</MessageResponse>
 						)}
