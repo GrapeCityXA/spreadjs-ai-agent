@@ -1,13 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import Image from "next/image";
-import type { FileUIPart } from "ai";
 import { isAppToolPart, type AppUIMessage } from "@/lib/agent/ui-message";
 import { type Session, getSession } from "@/lib/agent/session-store";
-import { ImageIcon } from "lucide-react";
-import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import { ImageAttachment } from "@/components/ai-elements/image-attachment";
 import {
 	type MixedPartItem,
 	getToolName,
@@ -82,7 +79,6 @@ export function SessionPreview({ sessionId, anchor, onMouseEnter, onMouseLeave }
 
 /** 复用 ChatPanel 的消息渲染逻辑，按相同规则分组工具调用和思考过程 */
 function PreviewMessage({ message }: { message: AppUIMessage }) {
-	const { t } = useTranslation();
 	return (
 		<Message from={message.role}>
 			<MessageContent>
@@ -130,29 +126,7 @@ function PreviewMessage({ message }: { message: AppUIMessage }) {
 						} else if (part.type === "reasoning" && part.text) {
 							mixedBuf.push({ kind: "reasoning", text: part.text, state: part.state });
 						} else if (part.type === "file" && part.mediaType?.startsWith("image/")) {
-							const fp: FileUIPart = part;
-							elements.push(
-								<HoverCard key={i} openDelay={200} closeDelay={100}>
-									<HoverCardTrigger asChild>
-										<span className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/50 px-2.5 py-1 text-xs font-medium text-foreground cursor-default mt-1">
-											<ImageIcon className="size-3.5 text-muted-foreground" />
-											<span className="max-w-[160px] truncate">{fp.filename ?? t("common.image")}</span>
-										</span>
-									</HoverCardTrigger>
-									<HoverCardContent className="w-auto max-w-xs p-2" side="top">
-										<div className="relative h-48 w-72 max-w-[80vw]">
-											<Image
-												src={fp.url}
-												alt={fp.filename ?? t("common.image")}
-												fill
-												unoptimized
-												sizes="288px"
-												className="rounded-md object-contain"
-											/>
-										</div>
-									</HoverCardContent>
-								</HoverCard>,
-							);
+							elements.push(<ImageAttachment key={i} part={part} />);
 						}
 					}
 

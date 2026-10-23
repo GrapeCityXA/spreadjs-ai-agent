@@ -38,7 +38,7 @@ import { SettingsPanel } from "@/components/settings-panel";
 import { useSettings } from "@/lib/hooks/useSettings";
 import { useTheme } from "@/lib/hooks/useTheme";
 import { ServiceUnavailableBanner } from "@/components/ai-elements/service-unavailable-banner";
-import { PlusIcon, XIcon, FileIcon, ImageIcon, SparklesIcon, HistoryIcon, PaperclipIcon, Settings2Icon, WrenchIcon, RotateCcwIcon, GitBranchIcon, CopyIcon, PlayIcon, LoaderIcon, BrainIcon, PenLineIcon, AlertCircleIcon, CircleCheckIcon, ChevronDownIcon, PauseCircleIcon, MousePointerIcon } from "lucide-react";
+import { PlusIcon, XIcon, FileIcon, ImageIcon, HistoryIcon, PaperclipIcon, Settings2Icon, WrenchIcon, RotateCcwIcon, GitBranchIcon, CopyIcon, PlayIcon, LoaderIcon, BrainIcon, PenLineIcon, AlertCircleIcon, CircleCheckIcon, ChevronDownIcon, PauseCircleIcon, MousePointerIcon } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
@@ -50,6 +50,7 @@ import {
 	DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ai-elements/empty-state";
+import { ImageAttachment } from "@/components/ai-elements/image-attachment";
 import { ThinkingIndicator } from "@/components/ai-elements/thinking-indicator";
 import { ErrorMessage } from "@/components/ai-elements/error-message";
 import { ContextUsageIndicator } from "@/components/ai-elements/context-usage-indicator";
@@ -196,29 +197,7 @@ const MessageItem = memo(function MessageItem({ message, msgId, taskRenderDecisi
 							if (!cleaned) continue;
 							mixedBuf.push({ kind: "reasoning", text: cleaned, state: part.state });
 						} else if (part.type === "file" && part.mediaType?.startsWith("image/")) {
-							const fp: FileUIPart = part;
-							elements.push(
-								<HoverCard key={i} openDelay={200} closeDelay={100}>
-									<HoverCardTrigger asChild>
-										<span className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/50 px-2.5 py-1 text-xs font-medium text-foreground cursor-default mt-1">
-											<ImageIcon className="size-3.5 text-muted-foreground" />
-											<span className="max-w-[160px] truncate">{fp.filename ?? t("common.image")}</span>
-										</span>
-									</HoverCardTrigger>
-									<HoverCardContent className="w-auto max-w-xs p-2" side="top">
-										<div className="relative h-48 w-72 max-w-[80vw]">
-											<Image
-												src={fp.url}
-												alt={fp.filename ?? t("common.image")}
-												fill
-												unoptimized
-												sizes="288px"
-												className="rounded-md object-contain"
-											/>
-										</div>
-									</HoverCardContent>
-								</HoverCard>,
-							);
+							elements.push(<ImageAttachment key={i} part={part} />);
 						}
 					}
 					flushMixed();
@@ -734,8 +713,8 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 
 	// 保存快照后发送消息（ask_user 选项点击 / 继续执行 场景）
 	// 每次渲染更新 ref，保证闭包拿到最新的 workbook 和 session.id
-	const sendMessageWithSnapshotRef = useRef<(msg: { text: string }) => void>(() => {});
-	sendMessageWithSnapshotRef.current = async (msg: { text: string }) => {
+	const sendMessageWithSnapshotRef = useRef<(msg: { text: string; files?: FileUIPart[] }) => void>(() => {});
+	sendMessageWithSnapshotRef.current = async (msg: { text: string; files?: FileUIPart[] }) => {
 		if (workbook) {
 			const snapshotId = `snap_${session.id}_${Date.now()}`;
 			setSavingSnapshot(true);
@@ -755,7 +734,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		sendMessageRef.current(msg);
 	};
 	const stableSendMessageWithSnapshot = useCallback(
-		(msg: { text: string }) => sendMessageWithSnapshotRef.current(msg),
+		(msg: { text: string; files?: FileUIPart[] }) => sendMessageWithSnapshotRef.current(msg),
 		[],
 	);
 
@@ -884,8 +863,8 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		}
 	}, [session.id, handleStop, switchSession, setMessages, clearError, clearAttachments, t]);
 
-	const handleEmptySend = useCallback((text: string) => {
-		sendMessageWithSnapshotRef.current({ text });
+	const handleEmptySend = useCallback((text: string, files?: FileUIPart[]) => {
+		sendMessageWithSnapshotRef.current({ text, files });
 	}, []);
 
 	const handleFork = useCallback(async (messageId: string, withRestore: boolean) => {
@@ -1012,9 +991,6 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		<div className="flex h-full flex-col bg-background relative">
 			{/* 头部 */}
 			<div className="flex items-center gap-2.5 border-b border-border/60 px-4 py-2.5">
-				<div className="flex size-7 items-center justify-center rounded-lg bg-primary/10">
-					<SparklesIcon className="size-3.5 text-primary" />
-				</div>
 				<div className="flex flex-col flex-1 min-w-0">
 					<h2 className="text-sm font-semibold leading-tight truncate">
 						{messages.length > 0 ? session.title : t("empty.title")}
@@ -1024,7 +1000,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 						<span className="truncate">{headerStatus.text}</span>
 					</span>
 				</div>
-				{/* 右上角按钮组：新建 | 历史 | MCP */}
+				{/* 右上角按钮组：新建 | 历史 | 设置 */}
 				<div className="flex items-center gap-1 flex-shrink-0">
 					<button
 						type="button"
@@ -1057,38 +1033,45 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 				</div>
 			</div>
 
-			{/* 设置面板 */}
-			<div className={`absolute inset-x-0 top-[52px] bottom-0 z-20 border-t border-border/60 bg-background shadow-lg overflow-y-auto chat-scrollbar ${showSettings ? "" : "hidden"}`}>
-				<SettingsPanel
-					settings={settings}
-					onUpdateSettings={handleUpdateSettings}
-					chatPanelWidth={chatPanelWidth}
-					onChatPanelWidthChange={onChatPanelWidthChange}
-					onClearAutoSave={handleClearAutoSave}
-					autoSaveExists={autoSaveExists}
-					mcpServers={mcpServers}
-					mcpLoading={mcpLoading}
-					mcpError={mcpError}
-					mcpConfigJson={mcpConfigJson}
-					onMcpSaveAndConnect={saveAndConnectMcp}
-					onMcpToggleServer={toggleMcpServer}
-					onMcpDisconnectAll={disconnectAllMcp}
-					onMcpAuthorize={authorizeMcpServer}
-				/>
-			</div>
+			{/* 内容区（消息 + 输入）。设置 / 历史面板相对它绝对定位 */}
+			<div className="relative flex min-h-0 flex-1 flex-col">
 
-			{/* 会话历史面板（始终挂载，CSS 控制显隐，避免重复加载） */}
-			<div className={`absolute inset-x-0 top-[52px] bottom-0 z-20 border-t border-border/60 bg-background shadow-lg ${showHistory ? "" : "hidden"}`}>
-				<SessionHistory
-					currentSessionId={session.id}
-					onSelectSession={handleSelectSession}
-					onNewSession={handleNewSession}
-					refreshTrigger={historyRefresh}
-					onExportSession={handleExportSession}
-					onImportSession={handleImportSession}
-					onExportDiagnostic={handleExportDiagnostic}
-				/>
-			</div>
+			{/* 设置面板（仅展开时挂载：常驻挂载会让整棵设置树在流式过程中被反复重渲染） */}
+			{showSettings && (
+				<div className="absolute inset-0 z-20 border-t border-border/60 bg-background shadow-lg overflow-y-auto chat-scrollbar">
+					<SettingsPanel
+						settings={settings}
+						onUpdateSettings={handleUpdateSettings}
+						chatPanelWidth={chatPanelWidth}
+						onChatPanelWidthChange={onChatPanelWidthChange}
+						onClearAutoSave={handleClearAutoSave}
+						autoSaveExists={autoSaveExists}
+						mcpServers={mcpServers}
+						mcpLoading={mcpLoading}
+						mcpError={mcpError}
+						mcpConfigJson={mcpConfigJson}
+						onMcpSaveAndConnect={saveAndConnectMcp}
+						onMcpToggleServer={toggleMcpServer}
+						onMcpDisconnectAll={disconnectAllMcp}
+						onMcpAuthorize={authorizeMcpServer}
+					/>
+				</div>
+			)}
+
+			{/* 会话历史面板（仅展开时挂载：常驻挂载会让整个会话列表在流式过程中被反复重渲染） */}
+			{showHistory && (
+				<div className="absolute inset-0 z-20 border-t border-border/60 bg-background shadow-lg">
+					<SessionHistory
+						currentSessionId={session.id}
+						onSelectSession={handleSelectSession}
+						onNewSession={handleNewSession}
+						refreshTrigger={historyRefresh}
+						onExportSession={handleExportSession}
+						onImportSession={handleImportSession}
+						onExportDiagnostic={handleExportDiagnostic}
+					/>
+				</div>
+			)}
 
 			{/* 消息区 */}
 			<Conversation className="chat-scrollbar flex-1">
@@ -1122,6 +1105,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 						})
 					)}
 					{(() => { const lastMsg = messages[messages.length - 1]; return lastMsg?.role === "user" && !!lastMsg?.interrupted; })() && (<Message from="assistant"><MessageContent><div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/50"><span>{t("chat.sessionInterrupted")}</span></div></MessageContent></Message>)}
+					{/* 通用错误块 */}
 					{status === "error" && error && (
 						<Message from="assistant">
 							<MessageContent>
@@ -1354,6 +1338,9 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 				</PromptInput>
 			</div>
 			)}
+
+			</div>
+			{/* 内容区结束 */}
 
 			{/* 中断确认对话框 */}
 			<Dialog open={!!pendingAction} onOpenChange={(open) => { if (!open) setPendingAction(null); }}>
