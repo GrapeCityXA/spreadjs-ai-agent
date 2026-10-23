@@ -15,6 +15,14 @@ import type { ConfirmRequest } from "@/lib/hooks/useDestructiveGuard";
 const AGENT_TOOLS = new Set(["add_tasks", "complete_task", "ask_user"]);
 const TOOL_TIMEOUT_MS = 60_000;
 
+/**
+ * 单独给 bridge 加载留的超时。
+ *
+ * 比工具整体超时（60 秒）短得多：这是个 `import()`，要么很快落地，要么就是没戏了。
+ * 卡在这里的等待没有产出，早一点报错比多等 45 秒有意义。
+ */
+const BRIDGE_TIMEOUT_MS = 15_000;
+
 function withTimeout<T>(promise: Promise<T>, ms: number, toolName: string): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(
@@ -56,7 +64,24 @@ async function checkDestructiveOp(
 	requestConfirm: (params: ConfirmRequest) => Promise<boolean>,
 	locale: AppLocale,
 ): Promise<boolean> {
-	const bridge = await loadBridge();
+	// 加载 bridge 这一段必须有超时——它是动态 import，开发期热更新会让旧 chunk 失效，
+	// 请求可能长时间不落地；而它原本是这条路径上唯一没有上界的 await。
+	//
+	// **只包这一段，不包下面。** 这个函数紧接着要 `requestConfirm` 等用户点确认，
+	// 那一段按设计就该无限等待，给它加超时是错的。两者的区别值得写在这儿：
+	// 「加载可能失败」与「等人回答」是两件不同的事。
+	let bridge: Awaited<ReturnType<typeof loadBridge>>;
+	try {
+		bridge = await withTimeout(loadBridge(), BRIDGE_TIMEOUT_MS, "bridge");
+	} catch {
+		throw new Error(
+			localize(
+				locale,
+				"Could not load the spreadsheet bridge in time. Retry, or continue without this step.",
+				"加载表格桥接超时。请重试，或跳过这一步继续。",
+			),
+		);
+	}
 	bridge.setBridgeLocale(locale);
 	const resolved = normalizeLocale(locale);
 	const zh = resolved === "zh-CN";
@@ -376,7 +401,23 @@ export function useToolDispatch(
 	}, []);
 
 	const onToolCall = useCallback<NonNullable<ChatOnToolCallCallback<AppUIMessage>>>(async ({ toolCall }) => {
-		if (toolCall.dynamic) return;
+		// dynamic 表示"客户端没有这个工具的定义"。本项目不向 useChat 传 tools，
+		// 因此这个判断同时承担着类型收窄的作用（去掉它，toolCall.toolName 会退化成 string）。
+		// **但不能静默跳过**：不回结果的后果不是"这一步没生效"，而是整轮永远无法自动继续——
+		// 工具调用停在"进行中"，自动循环不再触发，用户发不出消息、只能中断会话。
+		// 所以这里回一条明确的错误，让模型据此调整
+		if (toolCall.dynamic) {
+			console.warn(`[useToolDispatch] unrecognized tool call ${toolCall.toolName}; responding with an error so the turn can continue`);
+			addToolOutputRef.current?.(
+				{
+					state: "output-error",
+					tool: toolCall.toolName,
+					toolCallId: toolCall.toolCallId,
+					errorText: "This tool is not available here.",
+				} as Parameters<AddToolOutputFn>[0],
+			);
+			return;
+		}
 
 		const workbookInstance = workbookRef.current;
 		const name = toolCall.toolName;
@@ -390,30 +431,48 @@ export function useToolDispatch(
 			return;
 		}
 
-		if (isServerTool(name) || name.startsWith("mcp__")) return;
+		// 服务端执行的工具不会走到这里，这一句是**防御性放行**。
+		//
+		// 依据是 SDK 的派发条件：`processUIMessageStream` 只在 `!chunk.providerExecuted`
+		// 时才调用 `onToolCall`。而 `providerExecuted` 的成因正是"工具有 execute"——
+		// 也就是 `isServerTool` 判定的那个条件（MCP 工具在 `lib/mcp/manager.ts` 里同样
+		// 装了 execute）。两者是同一件事的两种说法，所以这里够不到。
+		//
+		// **够到了也不能在这里回结果**：服务端已经回过一次，再补一条就是两条结果打架。
+		// 所以要的是显式放行，而不是把它推进下面的兜底里去报错。
+		if (isServerTool(name)) return;
 
 		const cache = cacheRef.current;
 		const input = toolCall.input as Record<string, unknown>;
 
+		// 本次调用是否回过结果。**这条兜底是必需的**：只要有一条路径在没回结果的情况下返回，
+		// 这一步的工具调用就永远停在"进行中"，自动循环再也不会继续——表现是会话整个挂住，
+		// 用户发不出消息、只能中断。所以出口处统一检查一次，宁可回一条错误也不能静默挂死
+		let emitted = false;
+		const emit = (args: Parameters<AddToolOutputFn>[0]) => {
+			emitted = true;
+			emitOutput(args, name);
+		};
+
 		try {
 			if (!workbookInstance && !AGENT_TOOLS.has(name)) {
-				emitOutput({
+				emit({
 					state: "output-error",
 					tool: name,
 					toolCallId,
 					errorText: localize(currentLocale, "SpreadJS is not ready yet", "SpreadJS 尚未就绪"),
-				}, name);
+				});
 				return;
 			}
 
 			const handler = getHandler(name);
 			if (!handler) {
-				emitOutput({
+				emit({
 					state: "output-error",
 					tool: name,
 					toolCallId,
 					errorText: localize(currentLocale, `Unknown tool: ${name}`, `未知工具：${name}`),
-				}, name);
+				});
 				return;
 			}
 
@@ -424,14 +483,14 @@ export function useToolDispatch(
 					input.fileBase64 = cached;
 					pendingFilesRef.current?.delete(fileName);
 				} else {
-					emitOutput({
+					emit({
 						state: "output-error",
 						tool: name,
 						toolCallId,
 						errorText: zh
 							? `上传缓存中找不到文件“${fileName}”。请重新上传后再试。`
 							: `File "${fileName}" was not found in the pending upload cache. Please upload it again.`,
-					}, name);
+					});
 					return;
 				}
 			}
@@ -442,21 +501,21 @@ export function useToolDispatch(
 				if (cached) {
 					input.base64 = cached;
 				} else {
-					emitOutput({
+					emit({
 						state: "output-error",
 						tool: name,
 						toolCallId,
 						errorText: zh
 							? `上传缓存中找不到图片“${fileName}”。请重新上传后重试。`
 							: `Image "${fileName}" was not found in the pending upload cache. Please upload it again and retry.`,
-					}, name);
+					});
 					return;
 				}
 			}
 
 			const cachedResult = cache.get(name, input);
 			if (cachedResult) {
-				emitOutput({ tool: name, toolCallId, output: cachedResult }, name);
+				emit({ tool: name, toolCallId, output: cachedResult });
 				return;
 			}
 
@@ -469,7 +528,7 @@ export function useToolDispatch(
 					currentLocale,
 				);
 				if (!confirmed) {
-					emitOutput({
+					emit({
 						state: "output-error",
 						tool: name,
 						toolCallId,
@@ -478,33 +537,45 @@ export function useToolDispatch(
 							"The user canceled this action. Adjust the plan or ask how they want to proceed.",
 							"用户取消了此操作。请调整计划，或询问用户希望如何继续。",
 						),
-					}, name);
+					});
 					return;
 				}
 			}
 
-			const bridge = await loadBridge();
-			bridge.setBridgeLocale(currentLocale);
+			// 只在使用工作簿的工具上加载 bridge——规划类工具（add_tasks 等）不碰工作簿，
+			// 没有理由为它们去拉这个 chunk。
+			//
+			// **而且必须包在超时里。** 这是个动态 import：开发期热更新会让旧 chunk 失效，
+			// 请求可能长时间不落地。它原本在超时之外，是这条路径上唯一没有超时保护的 await——
+			// 一旦它不返回，onToolCall 就永远不 resolve，而 SDK 是 await 它的：流处理不结束，
+			// 状态停在 streaming，用户发不出消息、只能中断，**且没有任何报错**（因为压根没抛错）。
+			const needsWorkbookBridge = !AGENT_TOOLS.has(name);
 			const result: { success: boolean; data?: unknown; error?: string } = await withTimeout(
-				handler(workbookInstance as SpreadWorkbook, input, { locale: currentLocale }),
+				(async () => {
+					if (needsWorkbookBridge) {
+						const bridge = await loadBridge();
+						bridge.setBridgeLocale(currentLocale);
+					}
+					return handler(workbookInstance as SpreadWorkbook, input, { locale: currentLocale });
+				})(),
 				TOOL_TIMEOUT_MS,
 				name,
 			);
 
 			if (!result.success) {
-				emitOutput({
+				emit({
 					state: "output-error",
 					tool: name,
 					toolCallId,
 					errorText: result.error ?? localize(currentLocale, "Tool execution failed", "工具执行失败"),
-				}, name);
+				});
 			} else if (name === "take_screenshot") {
 				const screenshot = result.data as ScreenshotToolData | undefined;
 				if (screenshot?.imageBase64) {
 					const text = zh
 						? `截图已生成：${screenshot.sheetName}（${screenshot.width}×${screenshot.height}）`
 						: `Screenshot captured: ${screenshot.sheetName} (${screenshot.width}x${screenshot.height})`;
-					emitOutput({
+					emit({
 						tool: name,
 						toolCallId,
 						output: {
@@ -514,13 +585,13 @@ export function useToolDispatch(
 								{ type: "media" as const, mediaType: "image/png" as const, data: screenshot.imageBase64 },
 							],
 						},
-					}, name);
+					});
 				} else {
-					emitOutput({ tool: name, toolCallId, output: result }, name);
+					emit({ tool: name, toolCallId, output: result });
 				}
 			} else {
 				cache.set(name, input, result);
-				emitOutput({ tool: name, toolCallId, output: result }, name);
+				emit({ tool: name, toolCallId, output: result });
 			}
 
 			if (!cache.isReadOnly(name) && !AGENT_TOOLS.has(name)) {
@@ -532,7 +603,20 @@ export function useToolDispatch(
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(`[useToolDispatch] Unhandled exception from ${name}:`, error);
-			emitOutput({ state: "output-error", tool: name, toolCallId, errorText: message }, name);
+			emit({ state: "output-error", tool: name, toolCallId, errorText: message });
+		}
+
+		// 走到这里说明我们接手了这个工具调用却没有回结果。补一条错误——
+		// 不回结果的后果不是"这一步没生效"，而是整轮**永远无法自动继续**：
+		// 工具调用停在"进行中"，自动循环不再触发，用户发不出消息、只能中断会话
+		if (!emitted) {
+			console.warn(`[useToolDispatch] no result emitted for ${name}; responding with an error so the turn can continue`);
+			emit({
+				state: "output-error",
+				tool: name,
+				toolCallId,
+				errorText: localize(currentLocale, "This tool produced no result. Retry, or continue without it.", "该工具没有产生结果。请重试，或跳过它继续执行其余步骤。"),
+			});
 		}
 	}, [emitOutput, pendingFilesRef]);
 

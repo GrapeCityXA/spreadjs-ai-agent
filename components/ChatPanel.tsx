@@ -488,8 +488,12 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 
 	// 自动保存：包装 stop，中断时在最后一条消息（user 或 assistant）上写入 interrupted 标记
 	const handleStop = useCallback(() => {
-		wasStoppedRef.current = true;
+		// **只在真的中断一轮生成时才置位。** 这个标记会让 sendAutomaticallyWhen
+		// 直接拒绝自动续跑（见该函数第一道判断）。而新建会话、切换会话也会调用
+		// 本函数——空闲时照样置位的话，下一轮第一个工具调用之后整轮就会停住，
+		// 表现是"会话自己中断了"。
 		if (isGeneratingRef.current) {
+			wasStoppedRef.current = true;
 			setMessages((prev) => {
 				if (prev.length === 0) return prev;
 				const updated = [...prev];
@@ -715,6 +719,13 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	// 每次渲染更新 ref，保证闭包拿到最新的 workbook 和 session.id
 	const sendMessageWithSnapshotRef = useRef<(msg: { text: string; files?: FileUIPart[] }) => void>(() => {});
 	sendMessageWithSnapshotRef.current = async (msg: { text: string; files?: FileUIPart[] }) => {
+		// 这条漏斗覆盖的是「输入框以外」的入口：空态快捷提示词、继续执行、ask_user 选项。
+		// 它们不经过 handleSubmit 的复位逻辑，所以必须在这里清掉上一轮遗留的中断标记与
+		// 步数计数——否则 sendAutomaticallyWhen 会把它当成"用户刚中断过"，
+		// 第一个工具调用之后整轮停住，看上去就是会话自己中断了。
+		wasStoppedRef.current = false;
+		autoStepCountRef.current = 0;
+		setStepLimitPaused(false);
 		if (workbook) {
 			const snapshotId = `snap_${session.id}_${Date.now()}`;
 			setSavingSnapshot(true);
