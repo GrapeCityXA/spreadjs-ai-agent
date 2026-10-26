@@ -15,9 +15,17 @@ interface SearchResult {
 interface SearchResponse {
 	answer?: string | null;
 	results: SearchResult[];
+	/** 实际返回结果的 provider，便于排查回退链 */
+	provider?: string;
 }
 
 type SearchProvider = (query: string, maxResults: number) => Promise<ToolResult<SearchResponse>>;
+
+/** 统一把 maxResults 兜成可用的正整数——模型可能不传，直接拿 undefined 算会得到空结果 */
+function normalizeLimit(maxResults: number): number {
+	if (!Number.isFinite(maxResults) || maxResults <= 0) return 5;
+	return Math.min(Math.floor(maxResults), 10);
+}
 
 // ============================================================================
 // DuckDuckGo HTML 端点 — 零成本、无 API Key
@@ -39,8 +47,15 @@ const duckDuckGoSearch: SearchProvider = async (query, maxResults) => {
 			return { success: false, error: `DuckDuckGo 请求失败: ${response.status}` };
 		}
 
+		// 202 不是正常结果页：DuckDuckGo 在短时间内请求过多时会返回反爬验证页，
+		// 状态码仍是成功，但正文里没有任何 result__a。必须当成失败交给回退链，
+		// 否则工具会以「搜索成功、0 条结果」返回，模型便不知道还可以换一个源。
+		if (response.status === 202) {
+			return { success: false, error: "DuckDuckGo 触发反爬验证（HTTP 202）" };
+		}
+
 		const html = await response.text();
-		const results = parseDuckDuckGoHTML(html, maxResults);
+		const results = parseDuckDuckGoHTML(html, normalizeLimit(maxResults));
 
 		return {
 			success: true,
@@ -156,12 +171,104 @@ const tavilySearch: SearchProvider = async (query, maxResults) => {
 };
 
 // ============================================================================
-// Provider 自动选择：有 TAVILY_API_KEY 用 Tavily，否则 DuckDuckGo
+// Bing RSS — 无需 API Key 的备用源
 // ============================================================================
 
-function getProvider(): SearchProvider {
-	if (process.env.TAVILY_API_KEY) return tavilySearch;
-	return duckDuckGoSearch;
+/**
+ * Bing 的 `format=rss` 端点返回标准 RSS，不依赖页面里的动态 class，
+ * 比抓 HTML 稳定，也不会像 DuckDuckGo 那样在连续请求后直接给验证页。
+ * 作为 DuckDuckGo 失败后的兜底。
+ */
+const bingRssSearch: SearchProvider = async (query, maxResults) => {
+	try {
+		const params = new URLSearchParams({ q: query, format: "rss" });
+		const response = await fetch(`https://www.bing.com/search?${params}`, {
+			method: "GET",
+			headers: {
+				"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+				"Accept": "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+				"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+			},
+		});
+
+		if (!response.ok) {
+			return { success: false, error: `Bing 请求失败: ${response.status}` };
+		}
+
+		const xml = await response.text();
+		return {
+			success: true,
+			data: { answer: null, results: parseBingRss(xml, normalizeLimit(maxResults)) },
+		};
+	} catch (e) {
+		return { success: false, error: e instanceof Error ? e.message : String(e) };
+	}
+};
+
+/** 从 Bing RSS 中提取标题、链接与摘要 */
+function parseBingRss(xml: string, maxResults: number): SearchResult[] {
+	const results: SearchResult[] = [];
+	const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
+	let match: RegExpExecArray | null;
+
+	while ((match = itemRegex.exec(xml)) !== null && results.length < maxResults) {
+		const block = match[1];
+		const title = readRssTag(block, "title");
+		const url = readRssTag(block, "link");
+		if (!title || !url) continue;
+		results.push({
+			title,
+			url,
+			snippet: stripHTMLTags(readRssTag(block, "description")).slice(0, 200),
+		});
+	}
+
+	return results;
+}
+
+function readRssTag(block: string, tag: string): string {
+	const match = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
+	if (!match) return "";
+	const raw = match[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "");
+	return decodeXmlEntities(stripHTMLTags(raw)).trim();
+}
+
+/** RSS/XML 实体解码（比 HTML 的命名实体少，够用即可） */
+function decodeXmlEntities(text: string): string {
+	return text
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'")
+		.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+		.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+		.replace(/&amp;/g, "&");
+}
+
+// ============================================================================
+// 回退链：Tavily（有 Key 时）→ DuckDuckGo → Bing RSS
+// ============================================================================
+
+async function searchWeb(query: string, maxResults: number): Promise<ToolResult<SearchResponse>> {
+	const providers: Array<[string, SearchProvider]> = [];
+	if (process.env.TAVILY_API_KEY) providers.push(["tavily", tavilySearch]);
+	providers.push(["duckduckgo", duckDuckGoSearch], ["bing", bingRssSearch]);
+
+	let lastError = "所有搜索源均未返回结果";
+
+	for (const [name, provider] of providers) {
+		const result = await provider(query, maxResults);
+		const count = result.success ? (result.data?.results.length ?? 0) : 0;
+
+		if (result.success && count > 0) {
+			return { ...result, data: { ...result.data!, provider: name } };
+		}
+
+		lastError = result.success ? `${name} 未返回结果` : `${name}: ${result.error}`;
+		console.warn(`[web_search] ${name} 失败，尝试下一个源：${lastError}`);
+	}
+
+	return { success: false, error: `搜索失败（${lastError}）` };
 }
 
 // ============================================================================
@@ -180,8 +287,7 @@ const webSearch: ToolDef<z.infer<typeof inputSchema>> = {
 		"搜索互联网获取外部数据，用于补充电子表格内容。返回摘要文本和来源链接，不是原始网页内容。适用场景：查询汇率、股价、统计数据等实时信息。",
 	inputSchema,
 	execute: async (input) => {
-		const provider = getProvider();
-		return provider(input.query, input.maxResults);
+		return searchWeb(input.query, normalizeLimit(input.maxResults));
 	},
 };
 
