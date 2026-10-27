@@ -22,7 +22,7 @@ import {
 	isTaskToolPart,
 	type AppUIMessage,
 } from "@/lib/agent/ui-message";
-import { useAttachments } from "@/lib/hooks/useAttachments";
+import { useAttachments, type AttachmentReject } from "@/lib/hooks/useAttachments";
 import { useChatContext } from "@/lib/hooks/useChatContext";
 import { useDirtyTracker } from "@/lib/hooks/useDirtyTracker";
 import { useToolDispatch } from "@/lib/hooks/useToolDispatch";
@@ -38,7 +38,7 @@ import { SettingsPanel } from "@/components/settings-panel";
 import { useSettings } from "@/lib/hooks/useSettings";
 import { useTheme } from "@/lib/hooks/useTheme";
 import { ServiceUnavailableBanner } from "@/components/ai-elements/service-unavailable-banner";
-import { PlusIcon, XIcon, FileIcon, ImageIcon, HistoryIcon, PaperclipIcon, Settings2Icon, WrenchIcon, RotateCcwIcon, GitBranchIcon, CopyIcon, PlayIcon, LoaderIcon, BrainIcon, PenLineIcon, AlertCircleIcon, CircleCheckIcon, ChevronDownIcon, PauseCircleIcon, MousePointerIcon } from "lucide-react";
+import { PlusIcon, XIcon, FileIcon, ImageIcon, EraserIcon, HistoryIcon, PaperclipIcon, Settings2Icon, WrenchIcon, RotateCcwIcon, GitBranchIcon, CopyIcon, PlayIcon, LoaderIcon, BrainIcon, PenLineIcon, AlertCircleIcon, CircleCheckIcon, ChevronDownIcon, PauseCircleIcon, MousePointerIcon } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
@@ -300,6 +300,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	const [showSettings, setShowSettings] = useState(false);
 	const [historyRefresh, setHistoryRefresh] = useState(0);
 	const [pendingAction, setPendingAction] = useState<{ message: string; action: () => void } | null>(null);
+	const [showClearConfirm, setShowClearConfirm] = useState(false);
 
 	// MCP
 	const {
@@ -325,14 +326,23 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	const [pendingAfterStop, setPendingAfterStop] = useState<string | null>(null);
 
 	// 会话管理
-	const { session, syncMessages, flushMessages, switchSession, newSession, onTitleChange, linkSnapshot, getSnapshotId, forkSession, saveTokenUsage } = useSession(settings.locale);
+	const { session, syncMessages, flushMessages, switchSession, newSession, onTitleChange, linkSnapshot, getSnapshotId, setLatestSnapshot, getLatestSnapshotId, forkSession, saveTokenUsage } = useSession(settings.locale);
 	const sessionRef = useRef(session);
 	useEffect(() => {
 		sessionRef.current = session;
 	}, [session]);
 
 	// 提取的 hooks
-	const { pendingFiles, pendingFilesRef, fileInputRef, handleFileSelect, handleFileDrop, handlePaste, removePendingFile, consumePendingFile, consumePendingImageParts, clearAttachments } = useAttachments({ visionAvailable });
+	const [attachmentError, setAttachmentError] = useState<AttachmentReject["reason"] | null>(null);
+	const handleAttachmentReject = useCallback(({ reason }: AttachmentReject) => {
+		setAttachmentError(reason);
+	}, []);
+	useEffect(() => {
+		if (!attachmentError) return;
+		const timer = setTimeout(() => setAttachmentError(null), 4000);
+		return () => clearTimeout(timer);
+	}, [attachmentError]);
+	const { pendingFiles, pendingFilesRef, fileInputRef, handleFileSelect, handleFileDrop, handlePaste, removePendingFile, consumePendingFile, consumePendingImageParts, clearAttachments } = useAttachments({ visionAvailable, onReject: handleAttachmentReject });
 	const [isDragging, setIsDragging] = useState(false);
 	// 工作簿变更追踪：记录每次 HTTP 请求之间的所有 SpreadJS 变更
 	const { consume: consumeDirty } = useDirtyTracker(workbook, settings.locale);
@@ -532,6 +542,13 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	const pendingSnapshotRef = useRef<string | null>(null);
 	const prevUserMsgCountRef = useRef(0);
 	const [savingSnapshot, setSavingSnapshot] = useState(false);
+	// 本轮对话属于哪个会话——切走之后迟到的快照不能再写入新会话
+	const turnSessionIdRef = useRef<string | null>(null);
+	// 轮次结束后的快照稍等再存：agent 自动续跑时 status 会短暂回到 ready
+	const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => () => {
+		if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
+	}, []);
 
 	// 消息变化时同步到会话存储 + 快照关联
 	const hasNotifiedNewSession = useRef(false);
@@ -665,6 +682,52 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		}
 	}, [isGenerating, settings.autoSave, workbook, stepLimitPaused, flushMessages]);
 
+	// 轮次结束后保存工作簿快照。
+	//
+	// 与“发送前保存”不同，这里保存的是**本轮修改完成之后**的状态，供历史会话直接恢复；
+	// 下一轮发送时再把它关联到新的用户消息上，作为“该消息发出前”的还原点。
+	// 延迟 500ms，避开 agent 自动续跑时 status 的短暂 ready。
+	const prevSnapshotGeneratingRef = useRef(false);
+	useEffect(() => {
+		const wasGenerating = prevSnapshotGeneratingRef.current;
+		prevSnapshotGeneratingRef.current = isGenerating;
+
+		if (isGenerating) {
+			if (snapshotTimerRef.current) {
+				clearTimeout(snapshotTimerRef.current);
+				snapshotTimerRef.current = null;
+			}
+			return;
+		}
+		if (!wasGenerating || stepLimitPaused || !workbook) return;
+		if (snapshotTimerRef.current) return;
+
+		const turnSessionId = turnSessionIdRef.current;
+		if (!turnSessionId || turnSessionId !== sessionRef.current.id) return;
+
+		snapshotTimerRef.current = setTimeout(async () => {
+			snapshotTimerRef.current = null;
+			if (isGeneratingRef.current) return;
+			if (turnSessionId !== sessionRef.current.id) return;
+
+			const wb = workbookRef.current;
+			if (!wb) return;
+			const snapshotId = `snap_${turnSessionId}_${Date.now()}`;
+			try {
+				await snapshotStoreIdb.save(snapshotId, wb);
+				// 保存期间切换了会话：这张快照属于旧会话，不能记到新会话上
+				if (turnSessionId !== sessionRef.current.id) {
+					await snapshotStoreIdb.discard(snapshotId);
+					return;
+				}
+				flushMessages();
+				setLatestSnapshot(snapshotId);
+			} catch {
+				// 快照保存失败不影响会话本身
+			}
+		}, 500);
+	}, [isGenerating, workbook, stepLimitPaused, flushMessages, setLatestSnapshot]);
+
 	// 中断后等 status 回 ready 再发送（避免 stop()+setTimeout(0) 竞态）
 	useEffect(() => {
 		if (status !== "ready" || pendingAfterStop === null) return;
@@ -718,6 +781,52 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	// 保存快照后发送消息（ask_user 选项点击 / 继续执行 场景）
 	// 每次渲染更新 ref，保证闭包拿到最新的 workbook 和 session.id
 	const sendMessageWithSnapshotRef = useRef<(msg: { text: string; files?: FileUIPart[] }) => void>(() => {});
+
+	/**
+	 * 准备本轮对话的“发送前”快照关联。
+	 *
+	 * 首个轮次没有上一轮快照，保存一次当前工作簿作为初始状态；之后的轮次直接复用
+	 * 上一轮结束后保存的快照——那正是本轮消息发出前的工作簿状态。这样每一轮结束
+	 * 只需要保存一次快照，既可供 fork 还原到消息之前，也可供历史会话恢复最后状态。
+	 */
+	const prepareSnapshotForSend = useCallback(async () => {
+		const wb = workbookRef.current;
+		if (!wb) return;
+
+		// 上一轮结束后的快照还在等待落盘：当前工作簿就是本轮发送前的状态，
+		// 直接存这一份，不要退回更早的 latestSnapshotId。
+		const hadPendingSnapshot = !!snapshotTimerRef.current;
+		if (snapshotTimerRef.current) {
+			clearTimeout(snapshotTimerRef.current);
+			snapshotTimerRef.current = null;
+		}
+
+		const latest = getLatestSnapshotId();
+		if (latest && !hadPendingSnapshot) {
+			await snapshotStoreIdb.whenReady();
+			if (snapshotStoreIdb.has(latest)) {
+				pendingSnapshotRef.current = latest;
+				return;
+			}
+		}
+
+		const snapshotId = `snap_${session.id}_${Date.now()}`;
+		setSavingSnapshot(true);
+		try {
+			await snapshotStoreIdb.save(snapshotId, wb);
+			pendingSnapshotRef.current = snapshotId;
+			// 自动保存开启时，同步将同一份快照写入 autosave-store
+			if (settings.autoSave) {
+				saveWorkbook(wb).then(() => setAutoSaveExists(true)).catch(() => {});
+			}
+		} catch {
+			// 快照保存失败，继续执行
+			pendingSnapshotRef.current = null;
+		} finally {
+			setSavingSnapshot(false);
+		}
+	}, [getLatestSnapshotId, session.id, settings.autoSave]);
+
 	sendMessageWithSnapshotRef.current = async (msg: { text: string; files?: FileUIPart[] }) => {
 		// 这条漏斗覆盖的是「输入框以外」的入口：空态快捷提示词、继续执行、ask_user 选项。
 		// 它们不经过 handleSubmit 的复位逻辑，所以必须在这里清掉上一轮遗留的中断标记与
@@ -726,22 +835,8 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		wasStoppedRef.current = false;
 		autoStepCountRef.current = 0;
 		setStepLimitPaused(false);
-		if (workbook) {
-			const snapshotId = `snap_${session.id}_${Date.now()}`;
-			setSavingSnapshot(true);
-			try {
-				await snapshotStoreIdb.save(snapshotId, workbook);
-				pendingSnapshotRef.current = snapshotId;
-				// 自动保存开启时，同步将同一份快照写入 autosave-store
-				if (settings.autoSave) {
-					saveWorkbook(workbook).then(() => setAutoSaveExists(true)).catch(() => {});
-				}
-			} catch {
-				// 快照保存失败，继续执行
-			} finally {
-				setSavingSnapshot(false);
-			}
-		}
+		turnSessionIdRef.current = session.id;
+		await prepareSnapshotForSend();
 		sendMessageRef.current(msg);
 	};
 	const stableSendMessageWithSnapshot = useCallback(
@@ -782,20 +877,9 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		// 确保 MCP 连接存活（节流 60s），等待完成再发送消息
 		await ensureConnected();
 
-		// 发送消息前保存 SpreadJS 快照（用 workbookRef.current 避免 useCallback 闭包拿到 null）
-		const wb = workbookRef.current;
-		if (wb) {
-			const snapshotId = `snap_${session.id}_${Date.now()}`;
-			pendingSnapshotRef.current = snapshotId;
-			snapshotStoreIdb.save(snapshotId, wb).then(() => {
-				// 自动保存开启时，同步将同一份快照写入 autosave-store
-				if (settings.autoSave) {
-					saveWorkbook(wb).then(() => setAutoSaveExists(true)).catch(() => {});
-				}
-			}).catch(() => {
-				pendingSnapshotRef.current = null;
-			});
-		}
+		// 发送前只需要关联快照：首轮保存初始状态，之后复用上一轮结束后的快照
+		turnSessionIdRef.current = session.id;
+		await prepareSnapshotForSend();
 
 		let text = msg.text.trim();
 
@@ -836,6 +920,11 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		hasNotifiedNewSession.current = false;
 		prevUserMsgCountRef.current = 0;
 		pendingSnapshotRef.current = null;
+		turnSessionIdRef.current = null;
+		if (snapshotTimerRef.current) {
+			clearTimeout(snapshotTimerRef.current);
+			snapshotTimerRef.current = null;
+		}
 		autoStepCountRef.current = 0;
 		setStepLimitPaused(false);
 		setHistoryRefresh((n) => n + 1);
@@ -852,6 +941,11 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	const handleSelectSession = useCallback(async (sessionId: string) => {
 		if (sessionId === session.id) {
 			setShowHistory(false);
+			// 当前会话也按“最后一次轮次结束后的快照”恢复，避免用户手动改过表格后无法回到会话状态
+			const latestSnapshotId = getLatestSnapshotId();
+			if (latestSnapshotId && workbook) {
+				await snapshotStoreIdb.restore(latestSnapshotId, workbook);
+			}
 			return;
 		}
 		const doSwitch = async () => {
@@ -863,16 +957,27 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 			clearAttachments();
 			prevUserMsgCountRef.current = msgs.filter((m) => m.role === "user").length;
 			pendingSnapshotRef.current = null;
+			turnSessionIdRef.current = null;
+			if (snapshotTimerRef.current) {
+				clearTimeout(snapshotTimerRef.current);
+				snapshotTimerRef.current = null;
+			}
 			autoStepCountRef.current = 0;
 			setStepLimitPaused(false);
 			setShowHistory(false);
+
+			// 恢复该会话最后一次轮次结束后的表格内容
+			const latestSnapshotId = getLatestSnapshotId();
+			if (latestSnapshotId && workbook) {
+				await snapshotStoreIdb.restore(latestSnapshotId, workbook);
+			}
 		};
 		if (isGeneratingRef.current) {
 			setPendingAction({ message: t("chat.interrupt.switchChat"), action: doSwitch });
 		} else {
 			await doSwitch();
 		}
-	}, [session.id, handleStop, switchSession, setMessages, clearError, clearAttachments, t]);
+	}, [session.id, handleStop, switchSession, setMessages, clearError, clearAttachments, t, getLatestSnapshotId, workbook]);
 
 	const handleEmptySend = useCallback((text: string, files?: FileUIPart[]) => {
 		sendMessageWithSnapshotRef.current({ text, files });
@@ -888,15 +993,23 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 			clearAttachments();
 			prevUserMsgCountRef.current = forked.messages.filter((m) => m.role === "user").length;
 			pendingSnapshotRef.current = null;
+			turnSessionIdRef.current = null;
 			hasNotifiedNewSession.current = forked.messages.length > 0;
 			autoStepCountRef.current = 0;
 			setStepLimitPaused(false);
 			setHistoryRefresh((n) => n + 1);
 
-			if (withRestore && workbook) {
-				const snapshotId = getSnapshotId(messageId);
-				if (snapshotId) {
-					await snapshotStoreIdb.restore(snapshotId, workbook);
+			if (workbook) {
+				if (withRestore) {
+					const snapshotId = getSnapshotId(messageId);
+					if (snapshotId) {
+						await snapshotStoreIdb.restore(snapshotId, workbook);
+					}
+				} else {
+					// 不还原表格时，分支会话的“最后状态”就是当前工作簿
+					const snapshotId = `snap_${forked.id}_${Date.now()}`;
+					await snapshotStoreIdb.save(snapshotId, workbook);
+					setLatestSnapshot(snapshotId);
 				}
 			}
 		};
@@ -906,7 +1019,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		} else {
 			await doFork();
 		}
-	}, [handleStop, forkSession, messages, setMessages, clearError, clearAttachments, workbook, getSnapshotId, t]);
+	}, [handleStop, forkSession, messages, setMessages, clearError, clearAttachments, workbook, getSnapshotId, setLatestSnapshot, t]);
 
 	// 自动保存设置更新处理：关闭时清除已保存数据
 	const handleUpdateSettings = useCallback((patch: Partial<typeof settings>) => {
@@ -920,6 +1033,51 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		await clearWorkbook();
 		setAutoSaveExists(false);
 	}, []);
+
+	/** 清空当前工作簿：重置表格，并同步最新的会话快照与自动保存 */
+	const handleClearWorkbook = useCallback(async () => {
+		if (!workbook || isGeneratingRef.current) return;
+
+		// 取消尚未落盘的本轮快照，避免它在清空之后又把旧内容写成 latest
+		if (snapshotTimerRef.current) {
+			clearTimeout(snapshotTimerRef.current);
+			snapshotTimerRef.current = null;
+		}
+		turnSessionIdRef.current = null;
+		pendingSnapshotRef.current = null;
+
+		try {
+			// 动态加载：SpreadJS 主包已经由 Designer 加载，避免把整包再静态打进聊天面板
+			const { resetWorkbook } = await import("@/lib/spreadjs/reset-workbook");
+			resetWorkbook(workbook);
+			refreshSheetInfo();
+		} catch (error) {
+			console.error("[clearWorkbook] 重置工作簿失败", error);
+			return;
+		}
+
+		if (messages.length > 0) {
+			const snapshotId = `snap_${session.id}_${Date.now()}`;
+			try {
+				await snapshotStoreIdb.save(snapshotId, workbook);
+				flushMessages();
+				setLatestSnapshot(snapshotId);
+			} catch {
+				// 快照保存失败不影响已经完成的清空
+			}
+		}
+
+		if (settings.autoSave) {
+			saveWorkbook(workbook).then(() => setAutoSaveExists(true)).catch(() => {});
+		} else {
+			// 不开自动保存时也删除旧数据，避免以后打开开关又恢复出清空前的表
+			clearWorkbook().then(() => setAutoSaveExists(false)).catch(() => {});
+		}
+
+		setShowClearConfirm(false);
+		setShowHistory(false);
+		setShowSettings(false);
+	}, [workbook, messages.length, session.id, flushMessages, setLatestSnapshot, settings.autoSave, refreshSheetInfo]);
 
 
 	// 导出指定会话
@@ -947,6 +1105,11 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 			clearAttachments();
 			prevUserMsgCountRef.current = msgs.filter((m) => m.role === "user").length;
 			pendingSnapshotRef.current = null;
+			turnSessionIdRef.current = null;
+			if (snapshotTimerRef.current) {
+				clearTimeout(snapshotTimerRef.current);
+				snapshotTimerRef.current = null;
+			}
 			hasNotifiedNewSession.current = msgs.length > 0;
 			autoStepCountRef.current = 0;
 			setStepLimitPaused(false);
@@ -1011,7 +1174,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 						<span className="truncate">{headerStatus.text}</span>
 					</span>
 				</div>
-				{/* 右上角按钮组：新建 | 历史 | 设置 */}
+				{/* 右上角按钮组：新建 | 历史 | 清空表格 | 设置 */}
 				<div className="flex items-center gap-1 flex-shrink-0">
 					<button
 						type="button"
@@ -1030,6 +1193,17 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 						title={t("chat.history")}
 					>
 						<HistoryIcon className="size-4" />
+					</button>
+					<button
+						type="button"
+						onClick={() => { if (!isReady || isGenerating) return; setShowClearConfirm(true); }}
+						aria-disabled={!isReady || isGenerating}
+						className={`inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${
+							!isReady || isGenerating ? "opacity-40 cursor-not-allowed hover:bg-transparent hover:text-muted-foreground" : ""
+						}`}
+						title={t("chat.clearWorkbook")}
+					>
+						<EraserIcon className="size-4" />
 					</button>
 					<button
 						type="button"
@@ -1230,11 +1404,16 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 				<input
 					ref={fileInputRef}
 					type="file"
-					accept={visionAvailable ? ".xlsx,.csv,.sjs,.ssjson,.json,.png,.jpg,.jpeg,.gif,.webp" : ".xlsx,.csv,.sjs,.ssjson,.json"}
+					accept={visionAvailable ? "image/*,.xlsx,.xlsm,.xlst,.xltx,.csv,.ssjson,.json,.sjs" : ".xlsx,.xlsm,.xlst,.xltx,.csv,.ssjson,.json,.sjs"}
 					multiple
 					className="hidden"
 					onChange={handleFileSelect}
 				/>
+				{attachmentError && (
+					<p className="px-1 pb-1 text-[11px] text-destructive" role="alert">
+						{t(attachmentError === "size" ? "prompt.fileTooLarge" : "prompt.fileTypeNotAccepted")}
+					</p>
+				)}
 				<DestructiveConfirmInline dialog={confirmDialog} onChoice={onConfirmChoice} />
 				<PromptInput onSubmit={handleSubmit}>
 					{(sheetInfo || pendingFiles.length > 0) && (
@@ -1363,6 +1542,20 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 					<DialogFooter>
 						<Button variant="outline" onClick={() => setPendingAction(null)}>{t("common.cancel")}</Button>
 						<Button variant="destructive" onClick={() => { pendingAction?.action(); setPendingAction(null); }}>{t("chat.interrupt.confirm")}</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			{/* 清空表格确认 */}
+			<Dialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+				<DialogContent showCloseButton={false} className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle>{t("chat.clearWorkbook.title")}</DialogTitle>
+						<DialogDescription>{t("chat.clearWorkbook.description")}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setShowClearConfirm(false)}>{t("common.cancel")}</Button>
+						<Button variant="destructive" onClick={() => { void handleClearWorkbook(); }}>{t("chat.clearWorkbook.confirm")}</Button>
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>

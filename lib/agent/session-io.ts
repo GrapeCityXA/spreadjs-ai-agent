@@ -12,7 +12,7 @@ import type { ErrorLogEntry } from "@/lib/logging/types";
 export interface SessionExportFile {
 	version: 1;
 	exportedAt: string;
-	session: Omit<Session, "snapshotMap">;
+	session: Omit<Session, "snapshotMap" | "latestSnapshotId">;
 }
 
 export interface ToolCallRecord {
@@ -30,7 +30,7 @@ export interface DiagnosticExportFile {
 		userAgent: string;
 		url: string;
 	};
-	session: Omit<Session, "snapshotMap">;
+	session: Omit<Session, "snapshotMap" | "latestSnapshotId">;
 	toolCallSummary: ToolCallRecord[];
 	clientDiagnostics: ClientDiagnostics;
 	serverLogs: ErrorLogEntry[];
@@ -163,6 +163,7 @@ export function importFileToSession(file: SessionExportFile): Session {
 		...file.session,
 		id: generateSessionId(),
 		snapshotMap: {},
+		latestSnapshotId: undefined,
 		updatedAt: Date.now(),
 	};
 }
@@ -370,7 +371,7 @@ export function exportDiagnosticToJson(
 	return JSON.stringify(file, null, 2);
 }
 
-function omitSnapshotMap(session: Session): Omit<Session, "snapshotMap"> {
+function omitSnapshotMap(session: Session): Omit<Session, "snapshotMap" | "latestSnapshotId"> {
 	return {
 		id: session.id || generateSessionId(),
 		title: session.title || "Untitled",

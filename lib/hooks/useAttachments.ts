@@ -20,8 +20,19 @@ export interface PendingFile {
  * 支持两类附件：电子表格文件（xlsx/csv/sjs）和图片文件（png/jpg/gif/webp）。
  * 支持同时暂存多个文件（多张图片、多个电子表格、或混合）。
  */
-const SPREADSHEET_EXTENSIONS = [".xlsx", ".csv", ".sjs", ".ssjson", ".json"];
+const SPREADSHEET_EXTENSIONS = [
+	".xlsx", ".xlsm", ".xlst", ".xltx",
+	".csv", ".ssjson", ".json", ".sjs",
+];
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+/** 单个附件上限：5MB */
+export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+
+export interface AttachmentReject {
+	reason: "type" | "size";
+	file: File;
+}
 
 function fileToDataUrl(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -77,8 +88,12 @@ function mimeToExt(mime: string): string {
 	return "png";
 }
 
-export function useAttachments(options?: { visionAvailable?: boolean }) {
+export function useAttachments(options?: {
+	visionAvailable?: boolean;
+	onReject?: (info: AttachmentReject) => void;
+}) {
 	const visionAvailable = options?.visionAvailable ?? true;
+	const onReject = options?.onReject;
 	const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
 	const pendingFilesRef = useRef(new Map<string, string>());
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -86,6 +101,14 @@ export function useAttachments(options?: { visionAvailable?: boolean }) {
 
 	/** 内部：暂存一个文件，追加到列表（自动区分电子表格和图片） */
 	const stageFile = useCallback(async (file: File) => {
+		if (!isAcceptedFile(file)) {
+			onReject?.({ reason: "type", file });
+			return;
+		}
+		if (file.size > MAX_ATTACHMENT_SIZE) {
+			onReject?.({ reason: "size", file });
+			return;
+		}
 		if (isImageFile(file)) {
 			if (!visionAvailable) {
 				console.warn("[useAttachments] Vision input is unavailable. Ignoring image:", file.name);
@@ -106,7 +129,7 @@ export function useAttachments(options?: { visionAvailable?: boolean }) {
 			pendingFilesRef.current.set(file.name, base64);
 			setPendingFiles(prev => [...prev, { name: file.name, size: file.size, fileType: "spreadsheet" }]);
 		}
-	}, [visionAvailable]);
+	}, [visionAvailable, onReject]);
 
 	/** 文件选择回调（绑定到 <input type="file" onChange>，支持多选） */
 	const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -121,7 +144,7 @@ export function useAttachments(options?: { visionAvailable?: boolean }) {
 	/** 拖拽放下回调 — 从 DragEvent 提取所有可接受的文件 */
 	const handleFileDrop = useCallback(async (e: React.DragEvent) => {
 		e.preventDefault();
-		const files = Array.from(e.dataTransfer.files).filter(isAcceptedFile);
+		const files = Array.from(e.dataTransfer.files);
 		for (const file of files) {
 			await stageFile(file);
 		}

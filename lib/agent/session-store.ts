@@ -9,8 +9,10 @@ export interface Session {
 	id: string;
 	title: string;
 	messages: AppUIMessage[];
-	/** messageId → snapshotId 映射，记录每条用户消息发送前的 SpreadJS 快照 */
+	/** messageId → snapshotId 映射，记录每条用户消息发送前的工作簿快照 */
 	snapshotMap?: Record<string, string>;
+	/** 最近一次对话轮次结束后的工作簿快照，切换回该会话时恢复 */
+	latestSnapshotId?: string;
 	/** 会话级任务计划列表，支持多计划历史 */
 	taskPlans?: TaskPlan[];
 	/** 最近一次 AI 回复后的真实 token 用量（用于切换会话时恢复上下文用量显示） */

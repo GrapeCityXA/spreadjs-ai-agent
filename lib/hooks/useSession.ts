@@ -85,6 +85,10 @@ interface UseSessionReturn {
 	linkSnapshot: (messageId: string, snapshotId: string) => void;
 	/** 获取 messageId 对应的 snapshotId */
 	getSnapshotId: (messageId: string) => string | undefined;
+	/** 记录最近一次对话轮次结束后的工作簿快照 */
+	setLatestSnapshot: (snapshotId: string) => void;
+	/** 获取最近一次对话轮次结束后的工作簿快照 */
+	getLatestSnapshotId: () => string | undefined;
 	/** Fork 会话：复制 messageId 之前的所有消息到新会话，返回新会话和被 fork 消息的文本 */
 	forkSession: (messageId: string, messages: AppUIMessage[]) => Promise<{ session: Session; inputText: string }>;
 	/** 保存本次 AI 回复的真实 token 用量到当前会话（不更新 updatedAt） */
@@ -111,6 +115,10 @@ export function useSession(locale: AppLocale = "en"): UseSessionReturn {
 	useEffect(() => {
 		sessionRef.current = session;
 	}, [session]);
+
+	// 最近一次轮次结束后的快照。切换会话时需要立即拿到值，不能等 setSession 渲染完成。
+	// 所有会改变它的路径（switch / new / fork / setLatestSnapshot）都会同步更新这个 ref。
+	const latestSnapshotRef = useRef<string | undefined>(session.latestSnapshotId);
 
 	// 组件卸载时清理防抖定时器
 	useEffect(() => () => { if (dbTimerRef.current) clearTimeout(dbTimerRef.current); }, []);
@@ -221,6 +229,11 @@ export function useSession(locale: AppLocale = "en"): UseSessionReturn {
 		titleGeneratedRef.current = true;
 		skipTimestampRef.current = true;
 		latestMessagesRef.current = found.messages;
+		// 旧会话没有轮次结束快照，退回“最后一条用户消息发出前”的快照，
+		// 至少能恢复到那一轮开始时的表格状态
+		const lastUser = [...found.messages].reverse().find((m) => m.role === "user");
+		latestSnapshotRef.current = found.latestSnapshotId
+			?? (lastUser ? found.snapshotMap?.[lastUser.id] : undefined);
 		setSession(found);
 		setActiveSessionId(found.id);
 
@@ -255,6 +268,7 @@ export function useSession(locale: AppLocale = "en"): UseSessionReturn {
 		const s = createNewSession(localeRef.current);
 		titleGeneratedRef.current = false;
 		latestMessagesRef.current = [];
+		latestSnapshotRef.current = undefined;
 		setSession(s);
 		clearActiveSessionId();
 		return s;
@@ -276,6 +290,19 @@ export function useSession(locale: AppLocale = "en"): UseSessionReturn {
 
 	const getSnapshotId = useCallback((messageId: string): string | undefined => {
 		return sessionRef.current.snapshotMap?.[messageId];
+	}, []);
+
+	const setLatestSnapshot = useCallback((snapshotId: string) => {
+		latestSnapshotRef.current = snapshotId;
+		setSession((prev) => {
+			const updated = { ...prev, latestSnapshotId: snapshotId };
+			saveSession(updated).catch(() => {});
+			return updated;
+		});
+	}, []);
+
+	const getLatestSnapshotId = useCallback((): string | undefined => {
+		return latestSnapshotRef.current;
 	}, []);
 
 	const saveTokenUsage = useCallback((usage: { promptTokens: number; contextWindow: number }) => {
@@ -320,12 +347,15 @@ export function useSession(locale: AppLocale = "en"): UseSessionReturn {
 			title: `${sessionRef.current.title}${getBranchSuffix(localeRef.current)}`,
 			messages: forkedMessages,
 			snapshotMap: forkedSnapshotMap,
+			// 被 fork 消息的 snapshotMap 值就是“该消息发出前”的状态，也是分支会话当前的状态
+			latestSnapshotId: srcMap[messageId],
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
 		};
 		await saveSession(forked);
 		titleGeneratedRef.current = forkedMessages.length > 0;
 		latestMessagesRef.current = forkedMessages;
+		latestSnapshotRef.current = forked.latestSnapshotId;
 		taskStore.reset();
 		setSession(forked);
 		return { session: forked, inputText };
@@ -335,5 +365,5 @@ export function useSession(locale: AppLocale = "en"): UseSessionReturn {
 	// 会话仅在收到第一条消息（syncMessages 调用）时才写入 DB，
 	// 避免每次刷新都产生一个空的"新会话"记录。
 
-	return { session, syncMessages, flushMessages, switchSession, newSession, onTitleChange, linkSnapshot, getSnapshotId, forkSession, saveTokenUsage };
+	return { session, syncMessages, flushMessages, switchSession, newSession, onTitleChange, linkSnapshot, getSnapshotId, setLatestSnapshot, getLatestSnapshotId, forkSession, saveTokenUsage };
 }
