@@ -26,6 +26,11 @@ import "@grapecity-software/spread-sheets-formula-panel";
 import "@grapecity-software/spread-sheets-io";
 
 import { useSpreadJS } from "@/lib/spreadjs/context";
+import {
+	addCustomFontsToResources,
+	registerCustomFontsInFormatDialog,
+	withCustomFontFamilies,
+} from "@/lib/spreadjs/designer-fonts";
 import { getLocaleConfig, type AppLocale } from "@/lib/i18n";
 import { useTranslation } from "@/lib/i18n/react";
 
@@ -90,10 +95,12 @@ function readDesignerResourceObject(): object {
 }
 
 function createDesignerConfig(spreadDesigner: DesignerNamespace) {
-	return {
+	// 格式对话框是全局模板，注册一次即可；字体列表本身做了去重
+	registerCustomFontsInFormatDialog(spreadDesigner);
+	return withCustomFontFamilies(spreadDesigner, {
 		...spreadDesigner.DefaultConfig,
 		fileMenu: undefined,
-	};
+	});
 }
 
 async function ensureRuntimeLocale(locale: AppLocale): Promise<void> {
@@ -124,7 +131,9 @@ async function ensureRuntimeLocale(locale: AppLocale): Promise<void> {
 async function getDesignerResources(locale: AppLocale): Promise<object> {
 	const cachedResources = designerResourcesCache.get(locale);
 	if (cachedResources) {
-		return cloneDesignerResources(cachedResources);
+		const resources = cloneDesignerResources(cachedResources);
+		addCustomFontsToResources(resources);
+		return resources;
 	}
 
 	const cachedPromise = designerResourcePromises.get(locale);
@@ -136,8 +145,9 @@ async function getDesignerResources(locale: AppLocale): Promise<object> {
 		attachGCToGlobal();
 		await designerResourceLoaders[locale]();
 		const resources = cloneDesignerResources(readDesignerResourceObject());
+		addCustomFontsToResources(resources);
 		designerResourcesCache.set(locale, resources);
-		return resources;
+		return cloneDesignerResources(resources);
 	})();
 
 	designerResourcePromises.set(locale, promise);
@@ -153,7 +163,7 @@ async function getDesignerResources(locale: AppLocale): Promise<object> {
 async function ensureDesignerRuntime(initialLocale: AppLocale): Promise<LoadedDesignerRuntime> {
 	if (!designerRuntimePromise) {
 		designerRuntimePromise = (async () => {
-			await getDesignerResources(initialLocale);
+			const resources = await getDesignerResources(initialLocale);
 			attachGCToGlobal();
 
 			const [designerModule, designerReactModule] = await Promise.all([
@@ -163,6 +173,8 @@ async function ensureDesignerRuntime(initialLocale: AppLocale): Promise<LoadedDe
 
 			designerModule.Spread.Sheets.Designer.LicenseKey =
 				process.env.NEXT_PUBLIC_SPREADJS_DESIGNER_LICENSE ?? "";
+			// 在 Designer 创建前把带中文字体的资源放回全局
+			designerModule.Spread.Sheets.Designer.setResources(resources);
 
 			return {
 				DesignerComponent: designerReactModule.Designer,

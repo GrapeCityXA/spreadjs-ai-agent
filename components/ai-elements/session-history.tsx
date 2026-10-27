@@ -22,6 +22,7 @@ import {
 	PAGE_SIZE,
 } from "@/lib/agent/session-store";
 import { SessionPreview } from "@/components/ai-elements/session-preview";
+import { MAX_ATTACHMENT_SIZE } from "@/lib/hooks/useAttachments";
 import { snapshotStore, snapshotStoreIdb } from "@/lib/spreadjs/snapshot-store";
 import { useTranslation } from "@/lib/i18n/react";
 import { getLocaleConfig, type AppLocale } from "@/lib/i18n";
@@ -59,6 +60,7 @@ export function SessionHistory({
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const searchEffectMountedRef = useRef(false);
 	const isSearching = query.trim().length > 0;
 
 	const showError = useCallback((msg: string) => {
@@ -89,13 +91,20 @@ export function SessionHistory({
 		}
 	}, []);
 
+	// 挂载与刷新时立即加载；query 变化交给下面的防抖 effect，避免同一轮加载两次
 	useEffect(() => {
 		setSessions([]);
 		setOffset(0);
 		load(query, 0, true);
-	}, [load, query, refreshTrigger]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [load, refreshTrigger]);
 
 	useEffect(() => {
+		// 首次挂载已经由上面的 effect 加载过，这里跳过，避免 300ms 后再清空重载一次
+		if (!searchEffectMountedRef.current) {
+			searchEffectMountedRef.current = true;
+			return;
+		}
 		if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
 		searchTimerRef.current = setTimeout(() => {
 			setSessions([]);
@@ -115,9 +124,12 @@ export function SessionHistory({
 		e.stopPropagation();
 		const session = await getSession(id);
 		await deleteSession(id);
-		if (session?.snapshotMap) {
-			const snapshotIds = Object.values(session.snapshotMap);
-			snapshotStoreIdb.discardMany(snapshotIds).catch(() => {});
+		if (session) {
+			const snapshotIds = Object.values(session.snapshotMap ?? {});
+			if (session.latestSnapshotId) snapshotIds.push(session.latestSnapshotId);
+			if (snapshotIds.length > 0) {
+				snapshotStoreIdb.discardMany(snapshotIds).catch(() => {});
+			}
 		}
 		setSessions((prev) => prev.filter((item) => item.id !== id));
 		setTotal((current) => current - 1);
@@ -144,6 +156,14 @@ export function SessionHistory({
 		if (!file) return;
 		e.target.value = "";
 		setMenuOpen(false);
+		if (!file.name.toLowerCase().endsWith(".json")) {
+			showError(t("prompt.fileTypeNotAccepted"));
+			return;
+		}
+		if (file.size > MAX_ATTACHMENT_SIZE) {
+			showError(t("prompt.fileTooLarge"));
+			return;
+		}
 		try {
 			await onImportSession?.(file);
 		} catch (err) {
