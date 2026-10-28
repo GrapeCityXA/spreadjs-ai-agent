@@ -6,10 +6,10 @@ import {
 	WandSparklesIcon,
 	FileUpIcon,
 	DatabaseIcon,
-	SearchIcon,
 	CalendarDaysIcon,
 	WalletIcon,
 	ImageUpIcon,
+	WrenchIcon,
 	type LucideIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -38,11 +38,13 @@ interface StarterPrompt {
 	level: PromptLevel;
 	/** 随提示词附带的一张示例图片（public 下的路径） */
 	image?: { src: string; filename: string; mediaType: string };
+	/** 随提示词附带的一个示例文件（public 下的路径） */
+	file?: { src: string; filename: string; mediaType: string };
 }
 
-/** 把 public 下的图片读成 AI SDK 的 FileUIPart（data URL） */
-async function loadImagePart(image: NonNullable<StarterPrompt["image"]>): Promise<FileUIPart> {
-	const response = await fetch(image.src);
+/** 把 public 下的示例附件读成 AI SDK 的 FileUIPart（data URL） */
+async function loadFilePart(file: { src: string; filename: string; mediaType: string }): Promise<FileUIPart> {
+	const response = await fetch(file.src);
 	if (!response.ok) throw new Error(`HTTP ${response.status}`);
 	const blob = await response.blob();
 	const url = await new Promise<string>((resolve, reject) => {
@@ -51,12 +53,12 @@ async function loadImagePart(image: NonNullable<StarterPrompt["image"]>): Promis
 		reader.onerror = () => reject(reader.error ?? new Error("读取图片失败"));
 		reader.readAsDataURL(blob);
 	});
-	return { type: "file", mediaType: image.mediaType, filename: image.filename, url };
+	return { type: "file", mediaType: file.mediaType, filename: file.filename, url };
 }
 
 export function EmptyState({ onSend, isReady }: EmptyStateProps) {
 	const { t } = useTranslation();
-	const [loadingImage, setLoadingImage] = useState(false);
+	const [loadingAttachment, setLoadingAttachment] = useState(false);
 	const capabilities = useMemo(
 		() => [
 			{ icon: TableIcon, label: t("empty.capability.data") },
@@ -71,16 +73,21 @@ export function EmptyState({ onSend, isReady }: EmptyStateProps) {
 			// 五条都从零可用：不假设表里已经有数据，空工作簿也能直接跑。
 			// 按档位从轻到重排列，右端标出档位供用户挑任务时参考。
 			{
-				icon: SearchIcon,
-				label: t("empty.prompt.structure"),
-				prompt: t("empty.prompt.structure.full"),
-				level: "simple",
-			},
-			{
 				icon: DatabaseIcon,
 				label: t("empty.prompt.sample"),
 				prompt: t("empty.prompt.sample.full"),
+				level: "simple",
+			},
+			{
+				icon: WrenchIcon,
+				label: t("empty.prompt.fixFormula"),
+				prompt: t("empty.prompt.fixFormula.full"),
 				level: "medium",
+				file: {
+					src: "/starter/销售分析看板.sjs",
+					filename: "销售分析看板.sjs",
+					mediaType: "application/octet-stream",
+				},
 			},
 			{
 				icon: CalendarDaysIcon,
@@ -110,18 +117,19 @@ export function EmptyState({ onSend, isReady }: EmptyStateProps) {
 	);
 
 	const sendStarter = async (item: StarterPrompt) => {
-		if (!item.image) {
+		const attachment = item.image ?? item.file;
+		if (!attachment) {
 			onSend(item.prompt);
 			return;
 		}
-		if (loadingImage) return;
-		setLoadingImage(true);
+		if (loadingAttachment) return;
+		setLoadingAttachment(true);
 		try {
-			onSend(item.prompt, [await loadImagePart(item.image)]);
+			onSend(item.prompt, [await loadFilePart(attachment)]);
 		} catch (error) {
-			console.error("[empty-state] 示例图片加载失败", error);
+			console.error("[empty-state] 示例附件加载失败", error);
 		} finally {
-			setLoadingImage(false);
+			setLoadingAttachment(false);
 		}
 	};
 
@@ -152,8 +160,9 @@ export function EmptyState({ onSend, isReady }: EmptyStateProps) {
 			<div className="flex w-full flex-col gap-2">
 				{starterPrompts.map((item) => {
 					const { icon: Icon, label, level } = item;
-					// 带图的那条要先 fetch 图片，加载期间禁用它，避免连点
-					const loading = !!item.image && loadingImage;
+					const attachment = item.image ?? item.file;
+					// 带附件的那条要先 fetch 文件，加载期间禁用它，避免连点
+					const loading = !!attachment && loadingAttachment;
 					return (
 						<button
 							key={label}

@@ -301,6 +301,7 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	const [historyRefresh, setHistoryRefresh] = useState(0);
 	const [pendingAction, setPendingAction] = useState<{ message: string; action: () => void } | null>(null);
 	const [showClearConfirm, setShowClearConfirm] = useState(false);
+	const [showNewClearConfirm, setShowNewClearConfirm] = useState(false);
 
 	// MCP
 	const {
@@ -980,8 +981,29 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 	}, [session.id, handleStop, switchSession, setMessages, clearError, clearAttachments, t, getLatestSnapshotId, workbook]);
 
 	const handleEmptySend = useCallback((text: string, files?: FileUIPart[]) => {
-		sendMessageWithSnapshotRef.current({ text, files });
-	}, []);
+		const imageFiles: FileUIPart[] = [];
+		const spreadsheetFiles: FileUIPart[] = [];
+		for (const part of files ?? []) {
+			if (part.type === "file" && part.mediaType?.startsWith("image/")) imageFiles.push(part);
+			else spreadsheetFiles.push(part);
+		}
+
+		let finalText = text;
+		for (const part of spreadsheetFiles) {
+			if (!part.filename) continue;
+			const base64 = part.url.split(",")[1];
+			if (!base64) continue;
+			// import_file 通过文件名从 pendingFilesRef 取 base64
+			pendingFilesRef.current.set(part.filename, base64);
+			finalText = `${t("chat.marker.attachment", { name: part.filename })}
+${finalText}`;
+		}
+
+		sendMessageWithSnapshotRef.current({
+			text: finalText,
+			files: imageFiles.length > 0 ? imageFiles : undefined,
+		});
+	}, [t, pendingFilesRef]);
 
 	const handleFork = useCallback(async (messageId: string, withRestore: boolean) => {
 		const doFork = async () => {
@@ -1034,9 +1056,9 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 		setAutoSaveExists(false);
 	}, []);
 
-	/** 清空当前工作簿：重置表格，并同步最新的会话快照与自动保存 */
-	const handleClearWorkbook = useCallback(async () => {
-		if (!workbook || isGeneratingRef.current) return;
+	/** 重置工作簿并同步自动保存；不读写会话快照。返回是否成功。 */
+	const resetWorkbookOnly = useCallback(async (): Promise<boolean> => {
+		if (!workbook || isGeneratingRef.current) return false;
 
 		// 取消尚未落盘的本轮快照，避免它在清空之后又把旧内容写成 latest
 		if (snapshotTimerRef.current) {
@@ -1052,9 +1074,22 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 			resetWorkbook(workbook);
 			refreshSheetInfo();
 		} catch (error) {
-			console.error("[clearWorkbook] 重置工作簿失败", error);
-			return;
+			console.error("[resetWorkbookOnly] 重置工作簿失败", error);
+			return false;
 		}
+
+		if (settings.autoSave) {
+			saveWorkbook(workbook).then(() => setAutoSaveExists(true)).catch(() => {});
+		} else {
+			// 不开自动保存时也删除旧数据，避免以后打开开关又恢复出清空前的表
+			clearWorkbook().then(() => setAutoSaveExists(false)).catch(() => {});
+		}
+		return true;
+	}, [workbook, settings.autoSave, refreshSheetInfo]);
+
+	/** 清空当前工作簿：重置表格，并同步最新的会话快照与自动保存 */
+	const handleClearWorkbook = useCallback(async () => {
+		if (!workbook || !(await resetWorkbookOnly())) return;
 
 		if (messages.length > 0) {
 			const snapshotId = `snap_${session.id}_${Date.now()}`;
@@ -1067,17 +1102,18 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 			}
 		}
 
-		if (settings.autoSave) {
-			saveWorkbook(workbook).then(() => setAutoSaveExists(true)).catch(() => {});
-		} else {
-			// 不开自动保存时也删除旧数据，避免以后打开开关又恢复出清空前的表
-			clearWorkbook().then(() => setAutoSaveExists(false)).catch(() => {});
-		}
-
 		setShowClearConfirm(false);
 		setShowHistory(false);
 		setShowSettings(false);
-	}, [workbook, messages.length, session.id, flushMessages, setLatestSnapshot, settings.autoSave, refreshSheetInfo]);
+	}, [resetWorkbookOnly, messages.length, session.id, workbook, flushMessages, setLatestSnapshot]);
+
+	/** 新建聊天并清空表格：旧会话保留最后一次完成轮次的快照 */
+	const handleNewSessionAndClearWorkbook = useCallback(async () => {
+		if (!workbook || !isReady || isGeneratingRef.current) return;
+		if (!(await resetWorkbookOnly())) return;
+		doNewSession();
+		setShowNewClearConfirm(false);
+	}, [workbook, isReady, resetWorkbookOnly, doNewSession]);
 
 
 	// 导出指定会话
@@ -1174,16 +1210,52 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 						<span className="truncate">{headerStatus.text}</span>
 					</span>
 				</div>
-				{/* 右上角按钮组：新建 | 历史 | 清空表格 | 设置 */}
+				{/* 右上角按钮组：新建 / 清空（合并菜单）| 历史 | 设置 */}
 				<div className="flex items-center gap-1 flex-shrink-0">
-					<button
-						type="button"
-						onClick={handleNewSession}
-						className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-						title={t("chat.new")}
-					>
-						<PlusIcon className="size-4" />
-					</button>
+					<div className="flex items-center">
+						<button
+							type="button"
+							onClick={handleNewSession}
+							className="inline-flex size-7 items-center justify-center rounded-l-md rounded-r-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+							title={t("chat.new")}
+						>
+							<PlusIcon className="size-4" />
+						</button>
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<button
+									type="button"
+									aria-label={t("chat.newMenu")}
+									title={t("chat.newMenu")}
+									className="inline-flex h-7 w-5 items-center justify-center rounded-l-none rounded-r-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+								>
+									<ChevronDownIcon className="size-3" />
+								</button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end" sideOffset={4} className="w-60">
+								<DropdownMenuItem onClick={handleNewSession}>
+									<PlusIcon className="size-4" />
+									<span>{t("chat.new")}</span>
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									onClick={() => setShowClearConfirm(true)}
+									disabled={!isReady || isGenerating}
+									variant="destructive"
+								>
+									<EraserIcon className="size-4" />
+									<span>{t("chat.clearWorkbook")}</span>
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									onClick={() => setShowNewClearConfirm(true)}
+									disabled={!isReady || isGenerating}
+									variant="destructive"
+								>
+									<EraserIcon className="size-4" />
+									<span>{t("chat.newClearWorkbook")}</span>
+								</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
+					</div>
 					<button
 						type="button"
 						onClick={() => { setShowHistory((v) => !v); setShowSettings(false); }}
@@ -1193,17 +1265,6 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 						title={t("chat.history")}
 					>
 						<HistoryIcon className="size-4" />
-					</button>
-					<button
-						type="button"
-						onClick={() => { if (!isReady || isGenerating) return; setShowClearConfirm(true); }}
-						aria-disabled={!isReady || isGenerating}
-						className={`inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${
-							!isReady || isGenerating ? "opacity-40 cursor-not-allowed hover:bg-transparent hover:text-muted-foreground" : ""
-						}`}
-						title={t("chat.clearWorkbook")}
-					>
-						<EraserIcon className="size-4" />
 					</button>
 					<button
 						type="button"
@@ -1556,6 +1617,20 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 					<DialogFooter>
 						<Button variant="outline" onClick={() => setShowClearConfirm(false)}>{t("common.cancel")}</Button>
 						<Button variant="destructive" onClick={() => { void handleClearWorkbook(); }}>{t("chat.clearWorkbook.confirm")}</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			{/* 新建聊天并清空表格确认 */}
+			<Dialog open={showNewClearConfirm} onOpenChange={setShowNewClearConfirm}>
+				<DialogContent showCloseButton={false} className="max-w-sm">
+					<DialogHeader>
+						<DialogTitle>{t("chat.newClearWorkbook.title")}</DialogTitle>
+						<DialogDescription>{t("chat.newClearWorkbook.description")}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setShowNewClearConfirm(false)}>{t("common.cancel")}</Button>
+						<Button variant="destructive" onClick={() => { void handleNewSessionAndClearWorkbook(); }}>{t("chat.newClearWorkbook")}</Button>
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
