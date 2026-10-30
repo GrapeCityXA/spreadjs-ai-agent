@@ -60,6 +60,10 @@ const CONTEXT_WINDOW_MAP: Array<[RegExp, number]> = [
 	[/\bglm-5\b/i, 128000],
 	[/\bglm-4\b/i, 128000],
 	// DeepSeek
+	// v4 系列与 flash 都是 1M。**必须排在通用的 deepseek 条目之前**——匹配是自上而下、
+	// 第一条命中生效，顺序反了就会被下面那个 64000 抢先。
+	[/\bdeepseek-v4/i, 1000000],
+	[/\bdeepseek-flash/i, 1000000],
 	[/\bdeepseek-v3/i, 128000],
 	[/\bdeepseek-r1/i, 128000],
 	[/\bdeepseek-chat/i, 128000],
