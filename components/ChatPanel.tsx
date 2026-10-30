@@ -95,6 +95,30 @@ import { DestructiveConfirmInline } from "@/components/ai-elements/destructive-c
 // MessageItem — memo 化的单条消息渲染，避免兄弟消息变化时不必要的重渲染
 // ============================================================================
 
+/**
+ * 发送前把工具调用里携带的附件 base64 去掉。
+ *
+ * `import_file` / `add_picture` 执行时会把文件 base64 放进工具输入；如果写回
+ * `toolCall.input`，下一次自动续跑会把整段 base64 当作消息历史发给模型。
+ * 这里再做一道兜底，保证旧会话里已经写入的 base64 也不会进入请求体。
+ */
+function stripAttachmentPayloads(messages: AppUIMessage[]): AppUIMessage[] {
+	return messages.map((message) => {
+		let changed = false;
+		const parts = message.parts.map((part) => {
+			if (!isAppToolPart(part) || part.input == null || typeof part.input !== "object") return part;
+			const input = part.input as Record<string, unknown>;
+			if (!("fileBase64" in input) && !("base64" in input)) return part;
+			const clean = { ...input };
+			delete clean.fileBase64;
+			delete clean.base64;
+			changed = true;
+			return { ...part, input: clean } as typeof part;
+		});
+		return changed ? { ...message, parts } : message;
+	});
+}
+
 interface MessageItemProps {
 	message: AppUIMessage;
 	msgId: string;
@@ -381,7 +405,19 @@ export default function ChatPanel({ chatPanelWidth, onChatPanelWidthChange }: Ch
 
 	// 稳定引用：避免内联创建导致 useChat 每次重建触发 messages 无限 rerender
 	const transport = useMemo(
-		() => new DefaultChatTransport({ api: CHAT_API_ENDPOINT, body: buildBody }),
+		() => new DefaultChatTransport<AppUIMessage>({
+			api: CHAT_API_ENDPOINT,
+			body: buildBody,
+			prepareSendMessagesRequest: ({ id, messages, body, trigger, messageId }) => ({
+				body: {
+					...body,
+					id,
+					messages: stripAttachmentPayloads(messages),
+					trigger,
+					messageId,
+				},
+			}),
+		}),
 		[buildBody],
 	);
 

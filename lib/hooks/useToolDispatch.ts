@@ -444,6 +444,10 @@ export function useToolDispatch(
 
 		const cache = cacheRef.current;
 		const input = toolCall.input as Record<string, unknown>;
+		// 执行用的副本：导入文件/图片时需要把 base64 注入给 handler，但**不能写回
+		// toolCall.input**。toolCall.input 属于助手消息的一部分，下一次自动续跑会
+		// 把整段消息重新发给模型；一个几 MB 的 base64 就足以让上下文爆掉。
+		let executionInput = input;
 
 		// 本次调用是否回过结果。**这条兜底是必需的**：只要有一条路径在没回结果的情况下返回，
 		// 这一步的工具调用就永远停在"进行中"，自动循环再也不会继续——表现是会话整个挂住，
@@ -480,7 +484,7 @@ export function useToolDispatch(
 				const fileName = input.fileName as string;
 				const cached = pendingFilesRef.current?.get(fileName);
 				if (cached) {
-					input.fileBase64 = cached;
+					executionInput = { ...input, fileBase64: cached };
 					pendingFilesRef.current?.delete(fileName);
 				} else {
 					emit({
@@ -499,7 +503,7 @@ export function useToolDispatch(
 				const fileName = input.fileName as string;
 				const cached = pendingFilesRef.current?.get(fileName);
 				if (cached) {
-					input.base64 = cached;
+					executionInput = { ...executionInput, base64: cached };
 				} else {
 					emit({
 						state: "output-error",
@@ -556,7 +560,7 @@ export function useToolDispatch(
 						const bridge = await loadBridge();
 						bridge.setBridgeLocale(currentLocale);
 					}
-					return handler(workbookInstance as SpreadWorkbook, input, { locale: currentLocale });
+					return handler(workbookInstance as SpreadWorkbook, executionInput, { locale: currentLocale });
 				})(),
 				TOOL_TIMEOUT_MS,
 				name,

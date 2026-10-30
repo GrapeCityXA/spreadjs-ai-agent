@@ -72,6 +72,20 @@ function getActiveToolDefinitionCount(messages: AppUIMessage[], mcpToolCount: nu
 	return baseToolNames.length + gatewayToolNames.length + mcpToolCount;
 }
 
+/** 工具输入估算时去掉附件 base64；它不应进入模型上下文 */
+function stringifyToolInput(input: unknown): string | undefined {
+	if (input && typeof input === "object") {
+		const record = input as Record<string, unknown>;
+		if ("fileBase64" in record || "base64" in record) {
+			const clean = { ...record };
+			delete clean.fileBase64;
+			delete clean.base64;
+			return JSON.stringify(clean);
+		}
+	}
+	return JSON.stringify(input);
+}
+
 /**
  * 单条工具调用的 token 估算。完成态按 `toolCallId + state` 缓存；
  * 流式中的输入会变，不缓存。
@@ -81,7 +95,7 @@ function getToolTokens(part: AppToolUIPart, cache: EstimateCache): ToolTokens {
 	const cached = cache.tools.get(key);
 	if (cached) return cached;
 
-	const input = part.input != null ? estimateTokens(JSON.stringify(part.input)) : 0;
+	const input = part.input != null ? estimateTokens(stringifyToolInput(part.input) ?? "") : 0;
 	const output =
 		part.state === "output-available" && part.output != null
 			? estimateTokens(typeof part.output === "string" ? part.output : JSON.stringify(part.output))
