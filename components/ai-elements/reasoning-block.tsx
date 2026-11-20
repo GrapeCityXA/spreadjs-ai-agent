@@ -31,7 +31,11 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 	const { t } = useTranslation();
 	const text = stripThinkTags(rawText);
 	const isStreaming = state === "streaming";
-	const [open, setOpen] = useState(() => !interrupted);
+	// 只有一路跟着流式走过来的推理，才需要在结束后自动收起。
+	// 已经结束的推理是之后才挂载的（展开「还有 N 个…」分组、恢复历史会话），
+	// 沿用流式那套会先展开渲染、一秒后再自己合上，页面高度跟着跳一下。
+	const sawStreaming = useRef(isStreaming);
+	const [open, setOpen] = useState(() => isStreaming && !interrupted);
 	const hasAutoCollapsed = useRef(false);
 
 	// 逐字显示。服务端低频下发（便宜），这里按帧推进（连续），两者解耦。
@@ -44,6 +48,11 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 	const attachScroll = useStickToBottom<HTMLDivElement>(revealed);
 
 	useEffect(() => {
+		if (isStreaming) {
+			sawStreaming.current = true;
+			return;
+		}
+		if (!sawStreaming.current) return;
 		if (state === "done" && !interrupted && !hasAutoCollapsed.current) {
 			const timer = setTimeout(() => {
 				setOpen(false);
@@ -51,7 +60,7 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 			}, 1000);
 			return () => clearTimeout(timer);
 		}
-	}, [state, interrupted]);
+	}, [isStreaming, state, interrupted]);
 
 	if (!text) return null;
 
