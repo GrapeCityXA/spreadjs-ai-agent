@@ -204,10 +204,24 @@ export function useDirtyTracker(
 
 		const onActiveSheetChanged = () => { bindAll(); };
 
+		// workbook.fromJSON 会重建 Worksheet 实例，而活动表索引没变时不会触发
+		// ActiveSheetChanged——监听会留在被替换掉的旧表上，用户此后的手改就记录不到了
+		// （dirtyContext 失效）。低频过一遍实例引用，发现没绑过的表就补绑。
+		const syncSheets = () => {
+			try {
+				bindAll();
+			} catch {
+				/* 正在重建工作簿，下一轮再补 */
+			}
+		};
+
 		bindAll();
 		workbook.bind("ActiveSheetChanged", onActiveSheetChanged);
 
+		const syncTimer = window.setInterval(syncSheets, 500);
+
 		return () => {
+			window.clearInterval(syncTimer);
 			const count = workbook.getSheetCount();
 			for (let i = 0; i < count; i++) {
 				try { unbindSheet(asInteractiveWorksheet(workbook.getSheet(i))); } catch { /* sheet 可能已销毁 */ }

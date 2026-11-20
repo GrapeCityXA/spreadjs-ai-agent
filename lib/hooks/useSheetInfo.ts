@@ -136,11 +136,26 @@ export function useSheetInfo(workbook: SpreadWorkbook | null, locale: AppLocale 
 			update();
 		};
 
+		// workbook.fromJSON 会重建 Worksheet 实例，而活动 sheet 索引没变时不会触发
+		// ActiveSheetChanged——绑定会挂在已经废弃的旧表上，选区就不再跟随鼠标。
+		// 低频比一次实例引用，发现换了表就补绑。
+		const syncActiveSheet = () => {
+			const current = getActiveInteractiveSheet();
+			if (current === activeSheet) return;
+			unbindSheet(activeSheet);
+			activeSheet = current;
+			bindSheet(activeSheet);
+			update();
+		};
+
 		bindSheet(activeSheet);
 		workbook.bind("ActiveSheetChanged", onActiveSheetChanged);
 		update();
 
+		const syncTimer = window.setInterval(syncActiveSheet, 500);
+
 		return () => {
+			window.clearInterval(syncTimer);
 			unbindSheet(activeSheet);
 			workbook.unbind("ActiveSheetChanged", onActiveSheetChanged);
 		};
